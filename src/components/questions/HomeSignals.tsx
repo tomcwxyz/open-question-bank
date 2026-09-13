@@ -19,6 +19,11 @@ interface Enquiry {
   questionCount: number
 }
 
+interface EnquiryAction extends Enquiry {
+  actionHref: string
+  actionLabel: string
+}
+
 interface BrowseResponse {
   mostAsked: Question[]
   recent: Question[]
@@ -31,7 +36,7 @@ interface CampaignResponse {
 
 export function HomeSignals() {
   const [questions, setQuestions] = useState<Question[]>([])
-  const [enquiries, setEnquiries] = useState<Enquiry[]>([])
+  const [enquiries, setEnquiries] = useState<EnquiryAction[]>([])
   const [loaded, setLoaded] = useState(false)
 
   useEffect(() => {
@@ -53,7 +58,17 @@ export function HomeSignals() {
 
         if (campaignResponse.ok) {
           const data = (await campaignResponse.json()) as CampaignResponse
-          const active = [...(data.openForSubmission ?? []), ...(data.openForJudging ?? [])]
+          const acceptingQuestions = (data.openForSubmission ?? []).map((enquiry) => ({
+            ...enquiry,
+            actionHref: `/campaigns/${enquiry.id}/submit`,
+            actionLabel: 'Add what we should ask →',
+          }))
+          const prioritising = (data.openForJudging ?? []).map((enquiry) => ({
+            ...enquiry,
+            actionHref: `/judge/${enquiry.id}`,
+            actionLabel: 'Help decide what matters →',
+          }))
+          const active = [...acceptingQuestions, ...prioritising]
           const unique = active.filter(
             (enquiry, index, list) => list.findIndex((item) => item.id === enquiry.id) === index,
           )
@@ -136,8 +151,8 @@ export function HomeSignals() {
                 <p className="text-sm text-muted">
                   {enquiry.questionCount} question{enquiry.questionCount === 1 ? '' : 's'} in the conversation
                 </p>
-                <Link href={`/campaigns/${enquiry.id}`} className={buttonClasses('ghost', 'w-full')}>
-                  Take part →
+                <Link href={enquiry.actionHref} className={buttonClasses('ghost', 'w-full')}>
+                  {enquiry.actionLabel}
                 </Link>
               </Card>
             ))}
