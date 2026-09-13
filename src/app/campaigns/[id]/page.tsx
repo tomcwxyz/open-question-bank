@@ -1,12 +1,11 @@
 'use client'
 
+import Link from 'next/link'
 import { use, useCallback, useEffect, useState } from 'react'
-import { PageShell } from '@/components/ui/PageShell'
+import { AppShell } from '@/components/ui/AppShell'
 import { PublicNav } from '@/components/ui/PublicNav'
-import { Button } from '@/components/ui/Button'
-import { Card } from '@/components/ui/Card'
+import { Button, buttonClasses } from '@/components/ui/Button'
 import { Notice } from '@/components/ui/Notice'
-import { Stamp } from '@/components/ui/Stamp'
 import { RankingConfidenceChart } from '@/components/charts/RankingConfidenceChart'
 import {
   strengthPercent,
@@ -15,6 +14,15 @@ import {
   confidenceMeter,
   outcomePhrase,
 } from '@/lib/agenda-presentation'
+
+interface EnquiryInfo {
+  id: string
+  prompt: string
+  comparisonAxis: string
+  state: 'open' | 'comparing' | 'closed'
+  closesAt: string | null
+  questionCount: number
+}
 
 interface Item {
   rank: number
@@ -25,69 +33,83 @@ interface Item {
   nComparisons: number
   variantCount: number
 }
+
 interface Agenda {
   campaign: { prompt: string; comparisonAxis: string; closesAt: string | null }
   items: Item[]
 }
+
 interface Evidence {
   opponentText: string
   outcome: 'won' | 'lost' | 'drew'
-  // Note: the API also returns `servedReason` (the internal pairing reason); it is intentionally
-  // not surfaced in the public plain-language view, so it is omitted here.
   timestamp: string
 }
+
 interface PublicSynthesis {
   synthesisedText: string
   rationale: string
   sources: { questionId: string; canonicalText: string }[]
 }
 
-export default function AgendaPage({ params }: { params: Promise<{ id: string }> }) {
+export default function EnquiryPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params)
+  const [info, setInfo] = useState<EnquiryInfo | null>(null)
   const [agenda, setAgenda] = useState<Agenda | null>(null)
   const [loaded, setLoaded] = useState(false)
   const [message, setMessage] = useState('')
-  const [tone, setTone] = useState<'info' | 'error'>('error')
   const [evidence, setEvidence] = useState<Record<string, Evidence[]>>({})
   const [syntheses, setSyntheses] = useState<PublicSynthesis[]>([])
   const [openId, setOpenId] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
 
   const load = useCallback(async () => {
-    const res = await fetch(`/api/campaigns/${id}/agenda`)
-    const data = await res.json()
-    if (res.ok) {
-      setAgenda(data)
-      const sres = await fetch(`/api/campaigns/${id}/syntheses`)
-      if (sres.ok) setSyntheses((await sres.json()).syntheses)
-    } else if (res.status === 409) {
-      setTone('info')
-      setMessage("This campaign's agenda isn't published yet.")
-    } else {
-      setTone('error')
-      setMessage(data.error ?? 'This agenda is not available.')
+    try {
+      const infoResponse = await fetch(`/api/campaigns/${id}`)
+      const infoData = await infoResponse.json()
+      if (!infoResponse.ok) {
+        setMessage(infoData.error ?? 'This enquiry is not available.')
+        return
+      }
+
+      setInfo(infoData)
+
+      if (infoData.state === 'closed') {
+        const [agendaResponse, synthesisResponse] = await Promise.all([
+          fetch(`/api/campaigns/${id}/agenda`),
+          fetch(`/api/campaigns/${id}/syntheses`),
+        ])
+
+        if (agendaResponse.ok) setAgenda(await agendaResponse.json())
+        else setMessage('The results of this enquiry could not be loaded.')
+
+        if (synthesisResponse.ok) setSyntheses((await synthesisResponse.json()).syntheses)
+      }
+    } catch {
+      setMessage('Network error — please try again.')
+    } finally {
+      setLoaded(true)
     }
-    setLoaded(true)
   }, [id])
 
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect
-    load()
+    void load()
   }, [load])
 
-  async function toggle(questionId: string) {
+  async function toggleEvidence(questionId: string) {
     if (openId === questionId) {
       setOpenId(null)
       return
     }
     setOpenId(questionId)
-    if (evidence[questionId]) return // cached
+    if (evidence[questionId]) return
+
     setBusy(true)
     try {
-      const res = await fetch(`/api/campaigns/${id}/agenda/${questionId}`)
-      if (res.ok) {
-        const data = await res.json()
-        setEvidence((prev) => ({ ...prev, [questionId]: data.evidence }))
+      const response = await fetch(`/api/campaigns/${id}/agenda/${questionId}`)
+      if (response.ok) {
+        const data = await response.json()
+        setEvidence((previous) => ({ ...previous, [questionId]: data.evidence }))
       }
     } finally {
       setBusy(false)
@@ -96,147 +118,218 @@ export default function AgendaPage({ params }: { params: Promise<{ id: string }>
 
   if (!loaded) {
     return (
-      <PageShell nav={<PublicNav />}>
-        <p className="text-muted">Loading…</p>
-      </PageShell>
+      <AppShell nav={<PublicNav />}>
+        <p className="text-muted">Loading enquiry…</p>
+      </AppShell>
     )
   }
 
-  if (!agenda) {
+  if (!info || message) {
     return (
-      <PageShell nav={<PublicNav />}>
-        <Notice role={tone === 'error' ? 'alert' : 'status'} tone={tone}>
-          {message}
-        </Notice>
-      </PageShell>
+      <AppShell nav={<PublicNav />}>
+        <Notice role="alert" tone="error">{message || 'This enquiry is not available.'}</Notice>
+      </AppShell>
     )
   }
 
-  const closed = agenda.campaign.closesAt ? new Date(agenda.campaign.closesAt).toLocaleDateString() : null
-  const maxMu = agenda.items[0]?.mu ?? 0
+  const completed = info.closesAt ? new Date(info.closesAt).toLocaleDateString() : null
+  const maxMu = agenda?.items[0]?.mu ?? 0
 
   return (
-    <PageShell nav={<PublicNav />}>
-      <div className="space-y-1">
-        <p className="eyebrow">{agenda.campaign.comparisonAxis}</p>
-        <h1 className="text-3xl">{agenda.campaign.prompt}</h1>
-        <Stamp>Final agenda{closed ? ` · closed ${closed}` : ''}</Stamp>
-      </div>
-
-      <ul className="space-y-3 list-none p-0">
-        {agenda.items.map((item) => {
-          const ratio = maxMu > 0 ? item.mu / maxMu : 1
-          const pct = strengthPercent(item.mu, maxMu)
-          const label = standingLabel(item.rank, ratio)
-          const meter = confidenceMeter(confidenceLevel(item.sigma))
-          const evidenceRows = evidence[item.questionId]
-          return (
-            <li key={item.questionId}>
-              <Card className="space-y-3">
-                <div className="flex gap-3">
-                  <span className="font-display text-xl text-moss shrink-0">#{item.rank}</span>
-                  <div className="min-w-0 flex-1">
-                    <div className="break-words text-ink">{item.canonicalText}</div>
-                    {item.variantCount > 0 && (
-                      <p className="mt-0.5 text-sm text-muted">
-                        {item.variantCount} submission{item.variantCount === 1 ? '' : 's'} merged here
-                      </p>
-                    )}
-                  </div>
-                </div>
-
-                {/* Relative strength bar (decorative — the label carries the meaning). */}
-                <div aria-hidden="true" className="h-2 w-full overflow-hidden rounded-full bg-line">
-                  <div className="h-full rounded-full bg-moss" style={{ width: `${pct}%` }} />
-                </div>
-
-                <div className="flex items-center justify-between gap-3">
-                  <span className="text-sm font-medium text-ink">{label}</span>
-                  <span title={meter.label} aria-label={meter.label} className="shrink-0 text-sm tracking-widest">
-                    {[0, 1, 2].map((i) => (
-                      <span key={i} aria-hidden="true" className={i < meter.filled ? 'text-moss' : 'text-line'}>
-                        ●
-                      </span>
-                    ))}
-                  </span>
-                </div>
-
-                <Button type="button" variant="quiet" onClick={() => toggle(item.questionId)} disabled={busy}>
-                  {openId === item.questionId ? 'Hide evidence' : 'Show evidence'}
-                </Button>
-
-                {openId === item.questionId &&
-                  (evidenceRows ? (
-                    evidenceRows.length === 0 ? (
-                      <p className="text-sm text-muted">No comparisons recorded.</p>
-                    ) : (
-                      <div className="space-y-1">
-                        <p className="text-sm text-muted">
-                          Compared head-to-head {item.nComparisons} {item.nComparisons === 1 ? 'time' : 'times'}.
-                        </p>
-                        <ul className="space-y-1 list-none p-0">
-                          {evidenceRows.map((e, i) => (
-                            <li key={i} className="text-sm text-ink">
-                              <span className="font-medium">{outcomePhrase(e.outcome)}:</span> &quot;{e.opponentText}&quot;
-                            </li>
-                          ))}
-                        </ul>
-                      </div>
-                    )
-                  ) : (
-                    <p className="text-sm text-muted">
-                      {busy ? 'Loading evidence…' : "Couldn’t load evidence — try again."}
-                    </p>
-                  ))}
-              </Card>
-            </li>
-          )
-        })}
-      </ul>
-
-      <details className="text-sm">
-        <summary className="cursor-pointer text-muted">How was this ranked?</summary>
-        <div className="mt-3 space-y-3">
-          <p className="text-muted">
-            People compared these questions two at a time. Each choice nudges a question up or down;
-            the scores and certainty below come from those head-to-head choices.
-          </p>
-          <RankingConfidenceChart
-            items={agenda.items.map((it) => ({
-              rank: it.rank,
-              canonicalText: it.canonicalText,
-              mu: it.mu,
-              sigma: it.sigma,
-              nComparisons: it.nComparisons,
-              variantCount: it.variantCount,
-            }))}
-          />
+    <AppShell nav={<PublicNav />}>
+      <header className="max-w-4xl space-y-4">
+        <p className="eyebrow">Enquiry</p>
+        <h1 className="text-4xl leading-tight sm:text-5xl">{info.prompt}</h1>
+        <p className="max-w-2xl text-lg leading-relaxed text-muted">
+          {info.state === 'open'
+            ? 'This enquiry is still gathering the questions people think are worth asking.'
+            : info.state === 'comparing'
+              ? 'The questions are gathered. People are now helping work out which ones matter most to answer.'
+              : 'This enquiry is complete. Here is the picture that emerged from people comparing the questions.'}
+        </p>
+        <div className="flex flex-wrap gap-x-5 gap-y-2 text-sm text-muted">
+          {info.questionCount > 0 ? (
+            <span>{info.questionCount} question{info.questionCount === 1 ? '' : 's'} in this enquiry</span>
+          ) : null}
+          <span>Considering {info.comparisonAxis}</span>
+          {completed ? <span>Completed {completed}</span> : null}
         </div>
-      </details>
+      </header>
 
-      {syntheses.length > 0 && (
-        <section className="space-y-3">
-          <p className="eyebrow">Synthesised questions</p>
-          <ul className="space-y-3 list-none p-0">
-            {syntheses.map((s, i) => (
-              <li key={i}>
-                <Card className="space-y-2">
-                  <p className="text-ink">{s.synthesisedText}</p>
-                  <p className="text-sm text-muted">{s.rationale}</p>
-                  <Stamp>Synthesised from:</Stamp>
-                  <ul className="space-y-1 list-none p-0">
-                    {s.sources.map((src) => (
-                      <li key={src.questionId} className="text-sm text-ink break-words">
-                        — {src.canonicalText}
-                      </li>
-                    ))}
-                  </ul>
-                </Card>
-              </li>
-            ))}
-          </ul>
+      {info.state === 'open' ? (
+        <section className="max-w-3xl rounded-2xl border border-line bg-surface p-6 sm:p-8">
+          <p className="eyebrow">What can you add?</p>
+          <h2 className="mt-2 text-3xl">What should this enquiry be asking?</h2>
+          <p className="mt-3 max-w-2xl leading-relaxed text-muted">
+            Add a question in your own words. If someone has already asked something similar, we’ll help you find it rather than creating another copy.
+          </p>
+          <Link href={`/campaigns/${id}/submit`} className={buttonClasses('accent', 'mt-6')}>
+            Add what we should ask →
+          </Link>
         </section>
-      )}
-    </PageShell>
+      ) : null}
+
+      {info.state === 'comparing' ? (
+        <section className="max-w-3xl rounded-2xl border border-line bg-surface p-6 sm:p-8">
+          <p className="eyebrow">A useful five minutes</p>
+          <h2 className="mt-2 text-3xl">Help decide what matters most</h2>
+          <p className="mt-3 max-w-2xl leading-relaxed text-muted">
+            You’ll see two questions at a time. Choose the one you think matters more to answer. Each small judgement helps make the collective priorities clearer.
+          </p>
+          <Link href={`/judge/${id}`} className={buttonClasses('accent', 'mt-6')}>
+            Start comparing →
+          </Link>
+        </section>
+      ) : null}
+
+      {info.state === 'closed' && agenda ? (
+        <>
+          <section aria-labelledby="results-heading" className="space-y-4">
+            <div className="max-w-2xl">
+              <p className="eyebrow">What emerged</p>
+              <h2 id="results-heading" className="text-3xl">What rose to the top</h2>
+              <p className="mt-2 leading-relaxed text-muted">
+                These positions come from the comparisons made inside this enquiry. They are not a global score for the question.
+              </p>
+            </div>
+
+            <ol className="list-none border-b border-line p-0">
+              {agenda.items.map((item) => {
+                const ratio = maxMu > 0 ? item.mu / maxMu : 1
+                const pct = strengthPercent(item.mu, maxMu)
+                const label = standingLabel(item.rank, ratio)
+                const meter = confidenceMeter(confidenceLevel(item.sigma))
+                const evidenceRows = evidence[item.questionId]
+
+                return (
+                  <li key={item.questionId} className="border-t border-line py-6 sm:py-7">
+                    <div className="grid gap-4 sm:grid-cols-[3.5rem_minmax(0,1fr)] sm:gap-5">
+                      <span className="font-display text-3xl text-moss">#{item.rank}</span>
+                      <div className="min-w-0 space-y-4">
+                        <div>
+                          <Link
+                            href={`/questions/${item.questionId}`}
+                            className="font-display text-2xl leading-snug text-ink no-underline transition-colors hover:text-moss hover:no-underline sm:text-3xl"
+                          >
+                            {item.canonicalText}
+                          </Link>
+                          {item.variantCount > 0 ? (
+                            <p className="mt-2 text-sm text-muted">
+                              {item.variantCount + 1} submissions asked versions of this
+                            </p>
+                          ) : null}
+                        </div>
+
+                        <div className="max-w-xl space-y-2">
+                          <div aria-hidden="true" className="h-1.5 w-full overflow-hidden rounded-full bg-line">
+                            <div className="h-full rounded-full bg-moss" style={{ width: `${pct}%` }} />
+                          </div>
+                          <div className="flex flex-wrap items-center justify-between gap-3 text-sm">
+                            <span className="font-medium text-ink">{label}</span>
+                            <span title={meter.label} aria-label={meter.label} className="tracking-widest">
+                              {[0, 1, 2].map((index) => (
+                                <span key={index} aria-hidden="true" className={index < meter.filled ? 'text-moss' : 'text-line'}>
+                                  ●
+                                </span>
+                              ))}
+                            </span>
+                          </div>
+                        </div>
+
+                        <Button
+                          type="button"
+                          variant="quiet"
+                          onClick={() => void toggleEvidence(item.questionId)}
+                          disabled={busy}
+                        >
+                          {openId === item.questionId ? 'Hide evidence' : 'Show evidence'}
+                        </Button>
+
+                        {openId === item.questionId ? (
+                          evidenceRows ? (
+                            evidenceRows.length === 0 ? (
+                              <p className="text-sm text-muted">No comparisons recorded.</p>
+                            ) : (
+                              <div className="space-y-2 border-l-2 border-line pl-4">
+                                <p className="text-sm text-muted">
+                                  Compared head-to-head {item.nComparisons} {item.nComparisons === 1 ? 'time' : 'times'}.
+                                </p>
+                                <ul className="list-none space-y-1 p-0">
+                                  {evidenceRows.map((row, index) => (
+                                    <li key={`${row.timestamp}-${index}`} className="text-sm text-ink">
+                                      <span className="font-medium">{outcomePhrase(row.outcome)}:</span> “{row.opponentText}”
+                                    </li>
+                                  ))}
+                                </ul>
+                              </div>
+                            )
+                          ) : (
+                            <p className="text-sm text-muted">{busy ? 'Loading evidence…' : 'Couldn’t load evidence — try again.'}</p>
+                          )
+                        ) : null}
+                      </div>
+                    </div>
+                  </li>
+                )
+              })}
+            </ol>
+          </section>
+
+          <details className="border-y border-line py-1 text-sm">
+            <summary className="cursor-pointer py-4 font-medium text-ink">How was this ranked?</summary>
+            <div className="space-y-4 border-t border-line py-5">
+              <p className="max-w-3xl leading-relaxed text-muted">
+                People compared questions two at a time. Each choice nudged the relative positions and reduced uncertainty. The technical view below exposes the underlying score and confidence information for auditability.
+              </p>
+              <RankingConfidenceChart
+                items={agenda.items.map((item) => ({
+                  rank: item.rank,
+                  canonicalText: item.canonicalText,
+                  mu: item.mu,
+                  sigma: item.sigma,
+                  nComparisons: item.nComparisons,
+                  variantCount: item.variantCount,
+                }))}
+              />
+            </div>
+          </details>
+
+          {syntheses.length > 0 ? (
+            <section className="space-y-4" aria-labelledby="synthesis-heading">
+              <div className="max-w-2xl">
+                <p className="eyebrow">Looking across the questions</p>
+                <h2 id="synthesis-heading" className="text-3xl">What this might add up to</h2>
+              </div>
+              <div className="grid gap-5 md:grid-cols-2">
+                {syntheses.map((synthesis, index) => (
+                  <article key={`${synthesis.synthesisedText}-${index}`} className="rounded-xl border border-line bg-surface p-5 sm:p-6">
+                    <p className="font-display text-2xl leading-snug text-ink">{synthesis.synthesisedText}</p>
+                    <p className="mt-3 text-sm leading-relaxed text-muted">{synthesis.rationale}</p>
+                    <details className="mt-4 text-sm text-muted">
+                      <summary className="cursor-pointer hover:text-ink">See source questions</summary>
+                      <ul className="mt-3 list-none space-y-2 border-l border-line pl-4">
+                        {synthesis.sources.map((source) => (
+                          <li key={source.questionId}>
+                            <Link href={`/questions/${source.questionId}`} className="text-ink no-underline hover:text-moss hover:underline">
+                              {source.canonicalText}
+                            </Link>
+                          </li>
+                        ))}
+                      </ul>
+                    </details>
+                  </article>
+                ))}
+              </div>
+            </section>
+          ) : null}
+        </>
+      ) : null}
+
+      <footer className="border-t border-line pt-6">
+        <Link href="/campaigns" className="text-sm text-muted no-underline hover:text-ink hover:underline">
+          ← Explore other enquiries
+        </Link>
+      </footer>
+    </AppShell>
   )
 }
