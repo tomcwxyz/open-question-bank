@@ -1,6 +1,6 @@
 import type { ReactNode } from 'react'
-import Link from 'next/link'
 import { ThemeSwitcher } from './ThemeSwitcher'
+import { WorkspaceBrand } from '@/components/workspace/WorkspaceBrand'
 
 interface AppShellProps {
   children: ReactNode
@@ -20,12 +20,7 @@ export function AppShell({ children, nav, actions }: AppShellProps) {
     <div className="min-h-screen">
       <header className="border-b border-line">
         <div className="mx-auto max-w-6xl px-5 sm:px-6 lg:px-8 min-h-16 py-3 flex items-center gap-5">
-          <Link
-            href="/"
-            className="font-display text-lg text-moss no-underline hover:no-underline shrink-0"
-          >
-            Question Bank
-          </Link>
+          <WorkspaceBrand />
 
           <nav className="ml-auto flex items-center gap-3 sm:gap-5 text-sm" aria-label="Primary">
             {nav}
