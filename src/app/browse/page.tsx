@@ -1,7 +1,7 @@
 'use client'
 
 import Link from 'next/link'
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useState, type FormEvent } from 'react'
 import { AppShell } from '@/components/ui/AppShell'
 import { PublicNav } from '@/components/ui/PublicNav'
 import { Button, buttonClasses } from '@/components/ui/Button'
@@ -101,7 +101,7 @@ export default function BrowsePage() {
   }, [loadQuestions])
 
   useEffect(() => {
-    if (!showMap || graph || graphLoading) return
+    if (!showMap || graph) return
     let cancelled = false
 
     async function loadGraph() {
@@ -118,7 +118,7 @@ export default function BrowsePage() {
     return () => {
       cancelled = true
     }
-  }, [showMap, graph, graphLoading])
+  }, [showMap, graph])
 
   const runSearch = useCallback(async (query: string, nextPage: number) => {
     setLoading(true)
@@ -163,7 +163,7 @@ export default function BrowsePage() {
     }
   }, [])
 
-  const onSubmit = (event: React.FormEvent) => {
+  const onSubmit = (event: FormEvent) => {
     event.preventDefault()
     const query = queryInput.trim()
     if (!query) return
@@ -374,11 +374,7 @@ export default function BrowsePage() {
                       id={question.id}
                       question={question.canonicalText}
                       compact
-                      meta={
-                        question.clusterSize > 1
-                          ? `${question.clusterSize} related questions in this cluster`
-                          : 'Part of a question cluster'
-                      }
+                      meta={`${question.clusterSize} submissions asked versions of this`}
                     />
                   ))}
                 </div>
