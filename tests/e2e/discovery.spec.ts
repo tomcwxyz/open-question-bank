@@ -1,7 +1,5 @@
 import { test, expect } from '@playwright/test'
 
-// Admin creates a completed enquiry, an enquiry being prioritised, and a canonical question;
-// an ANONYMOUS context discovers them through the public Enquiries and Questions surfaces.
 test('the public can discover enquiries and questions without a direct link', async ({ page, browser }) => {
   const password = process.env.ADMIN_PASSWORD ?? 'admin'
   const stamp = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
@@ -21,7 +19,8 @@ test('the public can discover enquiries and questions without a direct link', as
     return question.id
   }
 
-  const ca = await makeCanonical(`discover A ${stamp}`)
+  const comparingText = `discover A ${stamp}`
+  const ca = await makeCanonical(comparingText)
   const cb = await makeCanonical(`discover B ${stamp}`)
   const comp = await page.request.post('/api/admin/campaigns', {
     data: { prompt: `discover prioritising ${stamp}`, comparisonAxis: 'importance' },
@@ -30,7 +29,8 @@ test('the public can discover enquiries and questions without a direct link', as
   await page.request.post(`/api/admin/campaigns/${comparing.id}/questions`, { data: { questionIds: [ca, cb] } })
   await page.request.post(`/api/admin/campaigns/${comparing.id}/open`)
 
-  const da = await makeCanonical(`discover C ${stamp}`)
+  const completedText = `discover C ${stamp}`
+  const da = await makeCanonical(completedText)
   const dbq = await makeCanonical(`discover D ${stamp}`)
   const clo = await page.request.post('/api/admin/campaigns', {
     data: { prompt: `discover completed ${stamp}`, comparisonAxis: 'importance' },
@@ -57,8 +57,9 @@ test('the public can discover enquiries and questions without a direct link', as
   await expect(vp.getByRole('heading', { name: `discover completed ${stamp}` })).toBeVisible()
   await expect(vp.getByRole('heading', { name: 'What rose to the top' })).toBeVisible()
 
-  // Completed enquiry questions are ranked and remain in the shared bank.
   await vp.goto('/questions')
-  await expect(vp.getByText(`discover C ${stamp}`)).toBeVisible()
+  await expect(vp.getByText(completedText)).toBeVisible()
+  await expect(vp.getByText(comparingText)).toBeVisible()
+
   await anon.close()
 })
