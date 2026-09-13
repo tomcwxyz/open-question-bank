@@ -1,13 +1,13 @@
 import type { ReactNode } from 'react'
-import Link from 'next/link'
 import { ThemeSwitcher } from './ThemeSwitcher'
+import { WorkspaceBrand } from '@/components/workspace/WorkspaceBrand'
 
 type Size = 'sm' | 'md' | 'lg'
 
 const widths: Record<Size, string> = {
-  sm: 'max-w-md', // login
-  md: 'max-w-2xl', // landing, submit
-  lg: 'max-w-3xl', // admin queues
+  sm: 'max-w-md',
+  md: 'max-w-2xl',
+  lg: 'max-w-3xl',
 }
 
 interface PageShellProps {
@@ -17,22 +17,15 @@ interface PageShellProps {
   size?: Size
 }
 
-// App chrome: a warm header with the wordmark + optional nav/actions, and a
-// measured `<main>` whose direct children stagger in on load (`.reveal`).
+/** Focused chrome for forms, reading and narrow task surfaces. */
 export function PageShell({ children, nav, actions, size = 'md' }: PageShellProps) {
   const width = widths[size]
   return (
     <div className="min-h-screen">
       <header className="border-b border-line">
-        <div className={`mx-auto ${width} px-6 h-16 flex items-center justify-between`}>
-          <Link
-            href="/"
-            className="font-display text-lg text-moss no-underline hover:no-underline"
-          >
-            Question Bank
-          </Link>
-          {/* Switcher is always present; nav/actions fill in per page. */}
-          <nav className="flex items-center gap-5 text-sm">
+        <div className={`mx-auto ${width} px-6 min-h-16 py-3 flex items-center gap-4`}>
+          <WorkspaceBrand />
+          <nav className="ml-auto flex items-center gap-3 sm:gap-5 text-sm" aria-label="Primary">
             {nav}
             {actions}
             <ThemeSwitcher />

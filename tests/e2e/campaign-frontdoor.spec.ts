@@ -1,18 +1,17 @@
 import { test, expect } from '@playwright/test'
 
-// Admin opens a campaign for submission; an ANONYMOUS visitor finds it on the public campaign
-// index and submits a question INTO it via the per-campaign submit page.
-test('the public can submit into an open campaign', async ({ page, browser }) => {
+// Admin opens an enquiry for submissions; an ANONYMOUS visitor finds it, can visit its durable
+// public home, and submits a question into it through the same discovery-first composer.
+test('the public can join an enquiry that is gathering questions', async ({ page, browser }) => {
   const password = process.env.ADMIN_PASSWORD ?? 'admin'
   const stamp = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
-  const prompt = `front-door campaign ${stamp}`
+  const prompt = `front-door enquiry ${stamp}`
 
   await page.goto('/admin/login')
   await page.getByLabel('Password').fill(password)
   await page.getByRole('button', { name: /log in/i }).click()
   await expect(page).toHaveURL(/\/admin\/moderation/)
 
-  // Create a campaign and open it for submission (via API, using the admin cookie).
   const created = await page.request.post('/api/admin/campaigns', {
     data: { prompt, comparisonAxis: 'importance' },
   })
@@ -20,31 +19,32 @@ test('the public can submit into an open campaign', async ({ page, browser }) =>
   const opened = await page.request.post(`/api/admin/campaigns/${campaign.id}/open-submission`)
   expect(opened.ok()).toBeTruthy()
 
-  // Anonymous visitor.
   const anon = await browser.newContext()
   const vp = await anon.newPage()
 
   await vp.goto('/campaigns')
+  await expect(vp.getByRole('heading', { name: 'Questions people are exploring together' })).toBeVisible()
   const row = vp.locator('li', { hasText: prompt })
   await expect(row).toBeVisible()
-  await row.getByRole('link', { name: 'Submit a question →' }).click()
 
+  await row.getByRole('link', { name: prompt }).click()
+  await expect(vp).toHaveURL(new RegExp(`/campaigns/${campaign.id}$`))
+  await expect(vp.getByRole('heading', { name: prompt })).toBeVisible()
+  await expect(vp.getByText(/still gathering the questions/i)).toBeVisible()
+
+  await vp.getByRole('link', { name: 'Add what we should ask →' }).click()
   await expect(vp).toHaveURL(new RegExp(`/campaigns/${campaign.id}/submit`))
   await expect(vp.getByRole('heading', { name: prompt })).toBeVisible()
 
-  // Submit a unique question into the campaign.
   const questionText = `should we fund ${stamp} for the neighbourhood?`
   await vp.getByLabel('Your question').fill(questionText)
-  await vp.getByRole('button', { name: 'Submit' }).click()
+  await vp.getByRole('button', { name: 'Add this question →' }).click()
 
-  // Submit either creates directly or surfaces dedup candidates (the "choose new" branch).
-  // Wait for whichever resolves first — isVisible() alone races the async candidate lookup —
-  // then take the "new question" branch if it's offered.
-  const chooseNew = vp.getByRole('button', { name: /None of these/ })
-  const success = vp.getByText(/added|Thanks/i)
+  const chooseNew = vp.getByRole('button', { name: 'Mine is different — add it' })
+  const success = vp.getByText(/Added\. We’ll check it|Added as a new question|strengthens an existing question/i)
   await expect(chooseNew.or(success).first()).toBeVisible()
   if (await chooseNew.isVisible()) await chooseNew.click()
 
-  await expect(success).toBeVisible()
+  await expect(vp.getByRole('status')).toBeVisible()
   await anon.close()
 })

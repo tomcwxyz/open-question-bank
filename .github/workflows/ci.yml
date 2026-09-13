@@ -1,0 +1,65 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    name: Lint, test and build
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: qb
+          POSTGRES_PASSWORD: qb
+          POSTGRES_DB: qb_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U qb -d qb_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      DATABASE_URL: postgres://qb:qb@localhost:5432/qb_test
+      TEST_DATABASE_URL: postgres://qb:qb@localhost:5432/qb_test
+      REASONING_PROVIDER: mock
+      EMBEDDING_MODEL: nomic-embed-text
+      EMBEDDING_DIM: '768'
+      DEDUP_THRESHOLD: '0.15'
+      CLUSTER_THRESHOLD: '0.2'
+      ADMIN_PASSWORD: test-admin-password
+      ADMIN_SESSION_SECRET: ci-only-session-secret-not-used-outside-tests
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Run tests
+        run: npm test
+
+      - name: Build
+        run: npm run build

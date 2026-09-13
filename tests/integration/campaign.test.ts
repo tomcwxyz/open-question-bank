@@ -20,7 +20,7 @@ const MISSING = '00000000-0000-0000-0000-000000000000'
 function pad(vec: number[]): number[] {
   return [...vec, ...Array(768 - vec.length).fill(0)]
 }
-async function q(text: string, state: 'clustered' | 'canonical' | 'under_comparison'): Promise<string> {
+async function q(text: string, state: 'clustered' | 'canonical' | 'under_comparison' | 'ranked'): Promise<string> {
   const [row] = await db
     .insert(question)
     .values({
@@ -61,9 +61,10 @@ describe('createCampaign + listCanonical', () => {
     expect(c.comparisonAxis).toBe('importance')
   })
 
-  it('lists only canonical questions (excludes clustered and under_comparison)', async () => {
+  it('lists only canonical questions for the legacy canonical listing', async () => {
     await q('clustered one', 'clustered')
-    await q('comparing one', 'under_comparison')
+    await q('comparing legacy row', 'under_comparison')
+    await q('ranked one', 'ranked')
     const canonId = await q('canon one', 'canonical')
     const list = await listCanonical()
     expect(list.map((r) => r.id)).toEqual([canonId])
@@ -82,12 +83,19 @@ describe('addQuestions / removeQuestion', () => {
     const c = await createCampaign({ prompt: 'p', comparisonAxis: 'importance' })
     const a = await q('a', 'canonical')
     await addQuestions(c.id, [a])
-    await addQuestions(c.id, [a]) // duplicate ignored
+    await addQuestions(c.id, [a])
     const detail = await getCampaign(c.id)
     expect(detail.members).toHaveLength(1)
   })
 
-  it('rejects a non-canonical question', async () => {
+  it('allows a previously ranked question to be reused in a later enquiry', async () => {
+    const c = await createCampaign({ prompt: 'p', comparisonAxis: 'importance' })
+    const ranked = await q('ranked from an earlier enquiry', 'ranked')
+    await addQuestions(c.id, [ranked])
+    expect((await getCampaign(c.id)).members.map((member) => member.id)).toEqual([ranked])
+  })
+
+  it('rejects a question that is not yet published', async () => {
     const c = await createCampaign({ prompt: 'p', comparisonAxis: 'importance' })
     const clustered = await q('c', 'clustered')
     await expect(addQuestions(c.id, [clustered])).rejects.toBeInstanceOf(IneligibleError)
@@ -108,7 +116,7 @@ describe('addQuestions / removeQuestion', () => {
 })
 
 describe('openComparison', () => {
-  it('moves to comparing, seeds scores, marks members under_comparison', async () => {
+  it('moves to comparing and seeds scores without hiding the published questions', async () => {
     const c = await createCampaign({ prompt: 'p', comparisonAxis: 'importance' })
     const a = await q('a', 'canonical')
     const b = await q('b', 'canonical')
@@ -119,13 +127,22 @@ describe('openComparison', () => {
     expect(scores).toHaveLength(2)
     expect(scores.every((row) => row.mu === 25 && row.nComparisons === 0)).toBe(true)
     const [qa] = await db.select().from(question).where(eq(question.id, a))
-    expect(qa.state).toBe('under_comparison')
+    expect(qa.state).toBe('canonical')
+  })
+
+  it('opens with a mix of canonical and previously ranked questions', async () => {
+    const c = await createCampaign({ prompt: 'new enquiry', comparisonAxis: 'importance' })
+    const ranked = await q('asked before', 'ranked')
+    const fresh = await q('new question', 'canonical')
+    await addQuestions(c.id, [ranked, fresh])
+    await expect(openComparison(c.id)).resolves.toMatchObject({ state: 'comparing' })
+    const [stillRanked] = await db.select().from(question).where(eq(question.id, ranked))
+    expect(stillRanked.state).toBe('ranked')
   })
 
   it('seeds a higher initial mu for questions with merged variants (community demand prior)', async () => {
     const a = await q('a', 'canonical')
     const b = await q('b', 'canonical')
-    // Merge 3 variants into a
     await db.insert(question).values([
       {
         rawText: 'va1', canonicalText: 'va1', embedding: pad([1, 0, 0]),
@@ -150,10 +167,8 @@ describe('openComparison', () => {
     const scores = await db.select().from(score).where(eq(score.campaignId, c.id))
     const scoreA = scores.find((s) => s.questionId === a)!
     const scoreB = scores.find((s) => s.questionId === b)!
-    // a has 3 variants → higher initial mu; b has none → default mu.
     expect(scoreA.mu).toBeGreaterThan(25)
     expect(scoreB.mu).toBe(25)
-    // Sigma unchanged for both.
     expect(scoreA.sigma).toBeCloseTo(scoreB.sigma, 5)
   })
 
@@ -163,22 +178,36 @@ describe('openComparison', () => {
     await expect(openComparison(c.id)).rejects.toBeInstanceOf(IneligibleError)
   })
 
-  it('refuses a question already under comparison in another campaign', async () => {
+  it('refuses to prioritise the same question in two enquiries at once', async () => {
     const a = await q('a', 'canonical')
     const b = await q('b', 'canonical')
-    const c1 = await createCampaign({ prompt: 'p1', comparisonAxis: 'importance' })
-    await addQuestions(c1.id, [a, b])
-    await openComparison(c1.id) // a, b now under_comparison
-    const c2 = await createCampaign({ prompt: 'p2', comparisonAxis: 'importance' })
-    // adding is fine (draft); opening conflicts because a is under_comparison
-    await db.insert(campaignQuestion).values([
-      { campaignId: c2.id, questionId: a },
-      { campaignId: c2.id, questionId: b },
-    ])
-    await expect(openComparison(c2.id)).rejects.toBeInstanceOf(IneligibleError)
+    const c = await q('c', 'canonical')
+
+    const first = await createCampaign({ prompt: 'p1', comparisonAxis: 'importance' })
+    await addQuestions(first.id, [a, b])
+    await openComparison(first.id)
+
+    const second = await createCampaign({ prompt: 'p2', comparisonAxis: 'importance' })
+    await addQuestions(second.id, [a, c])
+    await expect(openComparison(second.id)).rejects.toBeInstanceOf(IneligibleError)
   })
 
-  it('rejects add/remove once not draft', async () => {
+  it('allows the same question again after the earlier enquiry is complete', async () => {
+    const a = await q('a', 'canonical')
+    const b = await q('b', 'canonical')
+    const c = await q('c', 'canonical')
+
+    const first = await createCampaign({ prompt: 'p1', comparisonAxis: 'importance' })
+    await addQuestions(first.id, [a, b])
+    await openComparison(first.id)
+    await closeCampaign(first.id)
+
+    const second = await createCampaign({ prompt: 'p2', comparisonAxis: 'importance' })
+    await addQuestions(second.id, [a, c])
+    await expect(openComparison(second.id)).resolves.toMatchObject({ state: 'comparing' })
+  })
+
+  it('rejects add/remove once prioritisation has started', async () => {
     const c = await createCampaign({ prompt: 'p', comparisonAxis: 'importance' })
     const a = await q('a', 'canonical')
     const b = await q('b', 'canonical')
@@ -190,7 +219,7 @@ describe('openComparison', () => {
 })
 
 describe('closeCampaign', () => {
-  it('closes and moves members to ranked', async () => {
+  it('closes and records participating questions as ranked', async () => {
     const c = await createCampaign({ prompt: 'p', comparisonAxis: 'importance' })
     const a = await q('a', 'canonical')
     const b = await q('b', 'canonical')
@@ -201,6 +230,21 @@ describe('closeCampaign', () => {
     expect(closed.closesAt).toBeInstanceOf(Date)
     const [qa] = await db.select().from(question).where(eq(question.id, a))
     expect(qa.state).toBe('ranked')
+  })
+
+  it('normalises a legacy under-comparison member back to ranked on close', async () => {
+    const c = await createCampaign({ prompt: 'legacy', comparisonAxis: 'importance' })
+    const a = await q('legacy a', 'under_comparison')
+    const b = await q('legacy b', 'under_comparison')
+    await db.insert(campaignQuestion).values([
+      { campaignId: c.id, questionId: a },
+      { campaignId: c.id, questionId: b },
+    ])
+    await db.update(campaign).set({ state: 'comparing' }).where(eq(campaign.id, c.id))
+
+    await closeCampaign(c.id)
+    const rows = await db.select().from(question).where(eq(question.id, a))
+    expect(rows[0].state).toBe('ranked')
   })
 
   it('rejects closing a non-comparing campaign', async () => {

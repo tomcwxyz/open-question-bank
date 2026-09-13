@@ -2,28 +2,28 @@
 
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
-import { buttonClasses } from './Button'
 
 const links = [
-  { href: '/', label: 'Home' },
-  { href: '/browse', label: 'Browse' },
-  { href: '/campaigns', label: 'Campaigns' },
-  { href: '/submit', label: 'Submit' },
+  { href: '/browse', label: 'Questions', matches: ['/browse', '/questions'] },
+  { href: '/campaigns', label: 'Enquiries', matches: ['/campaigns', '/judge'] },
 ]
 
-// Public header nav (mirrors AdminShell's nav styling), passed into PageShell's `nav` slot.
 export function PublicNav() {
   const pathname = usePathname()
+
   return (
     <>
       {links.map((link) => {
-        const active = pathname === link.href
+        const active = link.matches.some(
+          (prefix) => pathname === prefix || pathname.startsWith(`${prefix}/`),
+        )
+
         return (
           <Link
             key={link.href}
             href={link.href}
             aria-current={active ? 'page' : undefined}
-            className={`no-underline hover:no-underline ${
+            className={`no-underline hover:no-underline whitespace-nowrap ${
               active ? 'text-moss font-medium' : 'text-muted hover:text-ink'
             }`}
           >
@@ -31,8 +31,12 @@ export function PublicNav() {
           </Link>
         )
       })}
-      <Link href="/admin/login" className={buttonClasses('ghost', 'ml-auto')}>
-        Log in
+
+      <Link
+        href="/admin/login"
+        className="hidden sm:inline text-muted hover:text-ink no-underline hover:no-underline whitespace-nowrap"
+      >
+        Admin
       </Link>
     </>
   )

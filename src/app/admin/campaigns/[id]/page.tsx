@@ -1,36 +1,30 @@
 'use client'
 
-import { use, useCallback, useEffect, useState } from 'react'
+import { use, useCallback, useEffect, useMemo, useState } from 'react'
+import Link from 'next/link'
 import { AdminShell } from '@/components/ui/AdminShell'
-import { Button } from '@/components/ui/Button'
+import { Button, buttonClasses } from '@/components/ui/Button'
 import { Card } from '@/components/ui/Card'
 import { Notice } from '@/components/ui/Notice'
-import { Stamp } from '@/components/ui/Stamp'
+import { EmptyState } from '@/components/ui/EmptyState'
 import { SynthesisPanel } from '@/components/ui/SynthesisPanel'
 
-interface Member {
-  id: string
-  canonicalText: string
-}
-interface ScoreRow {
-  questionId: string
-  mu: number
-  sigma: number
-  nComparisons: number
-}
+interface Member { id: string; canonicalText: string }
+interface Candidate extends Member { state?: 'canonical' | 'ranked' }
+interface ScoreRow { questionId: string; mu: number; sigma: number; nComparisons: number }
 interface CampaignDetail {
   campaign: { id: string; prompt: string; comparisonAxis: string; state: string }
   members: Member[]
   scores: ScoreRow[]
 }
-interface Pair {
-  a: Member
-  b: Member
-  servedReason: string
-}
-interface Candidate {
-  id: string
-  canonicalText: string
+interface Pair { a: Member; b: Member; servedReason: string }
+
+function stageCopy(state: string) {
+  if (state === 'draft') return ['Preparing', 'Choose the starting questions and decide how you want people to take part.'] as const
+  if (state === 'open') return ['Gathering questions', 'People can contribute questions to this enquiry now.'] as const
+  if (state === 'comparing') return ['Prioritising', 'People are comparing questions to clarify what matters most.'] as const
+  if (state === 'closed') return ['Complete', 'The prioritised result is published and ready to interpret.'] as const
+  return [state, 'This enquiry is in an operational state.'] as const
 }
 
 export default function CampaignDetailPage({ params }: { params: Promise<{ id: string }> }) {
@@ -44,11 +38,13 @@ export default function CampaignDetailPage({ params }: { params: Promise<{ id: s
   const load = useCallback(async () => {
     const res = await fetch(`/api/admin/campaigns/${id}`)
     if (res.ok) setDetail(await res.json())
-    else setMessage('Could not load this campaign.')
+    else setMessage('Could not load this enquiry.')
   }, [id])
 
   const loadCandidates = useCallback(async () => {
-    const res = await fetch('/api/admin/questions?state=canonical')
+    // The live bank includes both first-time canonical questions and questions ranked
+    // in earlier enquiries. Both are deliberately reusable in future enquiries.
+    const res = await fetch('/api/admin/questions?state=bank')
     if (res.ok) setCandidates((await res.json()).questions)
   }, [])
 
@@ -58,23 +54,12 @@ export default function CampaignDetailPage({ params }: { params: Promise<{ id: s
     loadCandidates()
   }, [load, loadCandidates])
 
-  const state = detail?.campaign.state
-  const memberIds = new Set(detail?.members.map((m) => m.id))
-  const addable = candidates.filter((c) => !memberIds.has(c.id))
-  const textById = new Map(detail?.members.map((m) => [m.id, m.canonicalText]))
-
-  // Fetch the next pair into state. Does NOT manage `busy`/errors — the caller
-  // owns that, so judge() can reuse it without an early `busy` release.
-  async function refreshPair() {
-    const res = await fetch(`/api/admin/campaigns/${id}/pair`)
-    const data = await res.json()
-    if (res.ok) {
-      setPair(data.pair)
-      setMessage(data.pair ? '' : 'No more informative pairs — comparison has settled.')
-    } else {
-      setMessage(data.error ?? 'Error')
-    }
-  }
+  const state = detail?.campaign.state ?? ''
+  const [stageLabel, stageSummary] = stageCopy(state)
+  const memberIds = useMemo(() => new Set(detail?.members.map((member) => member.id) ?? []), [detail?.members])
+  const addable = candidates.filter((candidate) => !memberIds.has(candidate.id))
+  const textById = new Map(detail?.members.map((member) => [member.id, member.canonicalText]) ?? [])
+  const ranked = detail?.scores.filter((row) => row.nComparisons > 0) ?? []
 
   async function add(questionId: string) {
     setBusy(true)
@@ -89,6 +74,7 @@ export default function CampaignDetailPage({ params }: { params: Promise<{ id: s
         setMessage((await res.json()).error ?? 'Could not add the question.')
         return
       }
+      setMessage('Question added to this enquiry.')
       await load()
     } catch {
       setMessage('Network error — please try again.')
@@ -104,12 +90,19 @@ export default function CampaignDetailPage({ params }: { params: Promise<{ id: s
       const res = await fetch(`/api/admin/campaigns/${id}/${path}`, { method: 'POST' })
       const data = await res.json()
       if (!res.ok) {
-        // Keep the current pair on a failed transition — don't drop the admin's context.
-        setMessage(data.error ?? 'Error')
-      } else {
-        setPair(null)
-        await load()
+        setMessage(data.error ?? 'Could not change the enquiry stage.')
+        return
       }
+      setPair(null)
+      setMessage(
+        path === 'open-submission'
+          ? 'The enquiry is now gathering questions publicly.'
+          : path === 'open'
+            ? 'Prioritisation is now open.'
+            : 'The result is now published.',
+      )
+      await load()
+      await loadCandidates()
     } catch {
       setMessage('Network error — please try again.')
     } finally {
@@ -117,16 +110,15 @@ export default function CampaignDetailPage({ params }: { params: Promise<{ id: s
     }
   }
 
-  async function getPair() {
-    setBusy(true)
-    setMessage('')
-    try {
-      await refreshPair()
-    } catch {
-      setMessage('Network error — please try again.')
-    } finally {
-      setBusy(false)
+  async function refreshPair() {
+    const res = await fetch(`/api/admin/campaigns/${id}/pair`)
+    const data = await res.json()
+    if (!res.ok) {
+      setMessage(data.error ?? 'Could not load a pair.')
+      return
     }
+    setPair(data.pair)
+    if (!data.pair) setMessage('There are no more informative pairs to compare right now.')
   }
 
   async function judge(winnerQuestionId: string | null) {
@@ -160,125 +152,167 @@ export default function CampaignDetailPage({ params }: { params: Promise<{ id: s
   if (!detail) {
     return (
       <AdminShell>
-        {message ? (
-          <Notice role="alert" tone="error">
-            {message}
-          </Notice>
-        ) : (
-          <p className="text-muted">Loading…</p>
-        )}
+        {message ? <Notice role="alert" tone="error">{message}</Notice> : <p className="text-muted">Loading enquiry…</p>}
       </AdminShell>
     )
   }
 
   return (
     <AdminShell>
-      <div className="space-y-1">
-        <p className="eyebrow">{detail.campaign.comparisonAxis} · {detail.campaign.state}</p>
-        <h1 className="text-3xl">{detail.campaign.prompt}</h1>
-      </div>
-
-      {message && (
-        <Notice role="status" tone="info">
-          {message}
-        </Notice>
-      )}
-
-      <div className="flex flex-wrap gap-2">
-        {state === 'draft' && (
-          <Button type="button" variant="ghost" onClick={() => transition('open-submission')} disabled={busy}>
-            Open for submission
-          </Button>
-        )}
-        {(state === 'draft' || state === 'open') && (
-          <Button type="button" onClick={() => transition('open')} disabled={busy}>
-            Open for comparison
-          </Button>
-        )}
-        {state === 'comparing' && (
-          <>
-            <Button type="button" onClick={getPair} disabled={busy}>
-              Get next pair
-            </Button>
-            <Button type="button" variant="quiet" onClick={() => transition('close')} disabled={busy}>
-              Close campaign
-            </Button>
-          </>
-        )}
-      </div>
-
-      {state === 'open' && (
-        <Stamp>Public submission link: /campaigns/{detail.campaign.id}/submit</Stamp>
-      )}
-
-      {state === 'comparing' && (
-        <Stamp>Public judging link: /judge/{detail.campaign.id}</Stamp>
-      )}
-
-      {state === 'closed' && (
-        <Stamp>Public agenda: /campaigns/{detail.campaign.id}</Stamp>
-      )}
-
-      {state === 'closed' && <SynthesisPanel campaignId={detail.campaign.id} />}
-
-      {state === 'comparing' && pair && (
-        <Card className="space-y-3">
-          <Stamp>{pair.servedReason}</Stamp>
-          <div className="grid gap-3 sm:grid-cols-2">
-            <Button type="button" variant="ghost" onClick={() => judge(pair.a.id)} disabled={busy}>
-              {pair.a.canonicalText}
-            </Button>
-            <Button type="button" variant="ghost" onClick={() => judge(pair.b.id)} disabled={busy}>
-              {pair.b.canonicalText}
-            </Button>
+      <header className="space-y-5 border-b border-line pb-6">
+        <Link href="/admin/campaigns" className="text-sm text-muted no-underline hover:text-ink hover:underline">← All enquiries</Link>
+        <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_14rem] lg:items-end">
+          <div>
+            <p className="eyebrow">{stageLabel}</p>
+            <h1 className="mt-1 max-w-4xl text-3xl sm:text-4xl leading-tight">{detail.campaign.prompt}</h1>
+            <p className="mt-3 max-w-2xl text-muted leading-relaxed">{stageSummary}</p>
           </div>
-          <Button type="button" variant="quiet" onClick={() => judge(null)} disabled={busy}>
-            Can&rsquo;t decide
-          </Button>
+          <div className="text-sm text-muted lg:text-right">
+            <p>People compare by</p>
+            <p className="font-medium text-ink">{detail.campaign.comparisonAxis}</p>
+          </div>
+        </div>
+      </header>
+
+      {message && <Notice role="status" tone="info">{message}</Notice>}
+
+      {state === 'draft' && (
+        <Card className="space-y-4">
+          <div>
+            <p className="eyebrow">Choose how to begin</p>
+            <h2 className="mt-1 text-2xl">How should people take part first?</h2>
+            <p className="mt-2 text-sm text-muted">Gather more questions publicly, or move straight to prioritisation once the starting set is strong enough.</p>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            <Button type="button" variant="accent" onClick={() => transition('open-submission')} disabled={busy}>Open to gather questions</Button>
+            <Button type="button" variant="ghost" onClick={() => transition('open')} disabled={busy}>Start prioritisation</Button>
+          </div>
         </Card>
       )}
 
-      <section className="space-y-2">
-        <p className="eyebrow">Ranking</p>
-        {detail.scores.length === 0 ? (
-          <p className="text-muted">No scores yet.</p>
-        ) : (
-          <ul className="space-y-2 list-none p-0">
-            {detail.scores.map((s) => (
-              <li key={s.questionId} className="text-sm text-ink">
-                <span className="font-medium">μ {s.mu.toFixed(1)}</span>{' '}
-                <span className="text-muted">σ {s.sigma.toFixed(1)} · {s.nComparisons} comparisons</span>
-                <div className="break-words">{textById.get(s.questionId) ?? s.questionId}</div>
-              </li>
-            ))}
-          </ul>
-        )}
-      </section>
+      {state === 'open' && (
+        <Card className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-center">
+          <div>
+            <p className="eyebrow">Public participation is open</p>
+            <h2 className="mt-1 text-2xl">Gathering questions</h2>
+            <p className="mt-2 text-sm text-muted">Share the public enquiry while collecting what people think should be asked.</p>
+          </div>
+          <div className="flex flex-wrap gap-2 lg:justify-end">
+            <Link href={`/campaigns/${id}`} className={buttonClasses('ghost')}>View public enquiry ↗</Link>
+            <Button type="button" variant="accent" onClick={() => transition('open')} disabled={busy}>Start prioritisation</Button>
+          </div>
+        </Card>
+      )}
+
+      {state === 'comparing' && (
+        <Card className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-center">
+          <div>
+            <p className="eyebrow">Public participation is open</p>
+            <h2 className="mt-1 text-2xl">People are deciding what matters most</h2>
+            <p className="mt-2 text-sm text-muted">Keep this open while useful comparisons are still arriving. Closing publishes the current result.</p>
+          </div>
+          <div className="flex flex-wrap gap-2 lg:justify-end">
+            <Link href={`/judge/${id}`} className={buttonClasses('ghost')}>View prioritisation ↗</Link>
+            <Button type="button" variant="accent" onClick={() => transition('close')} disabled={busy}>Close and publish result</Button>
+          </div>
+        </Card>
+      )}
+
+      {state === 'closed' && (
+        <Card className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-center">
+          <div>
+            <p className="eyebrow">Published result</p>
+            <h2 className="mt-1 text-2xl">The collective picture is now public</h2>
+            <p className="mt-2 text-sm text-muted">The result remains traceable to the pairwise choices underneath it.</p>
+          </div>
+          <Link href={`/campaigns/${id}`} className={buttonClasses('ghost', 'justify-self-start lg:justify-self-end')}>View public result ↗</Link>
+        </Card>
+      )}
 
       {(state === 'draft' || state === 'open') && (
-        <section className="space-y-2">
-          <p className="eyebrow">Add canonical questions</p>
-          {addable.length === 0 ? (
-            <p className="text-muted">No more canonical questions to add.</p>
+        <section className="space-y-5">
+          <div className="flex items-end justify-between gap-4">
+            <div><p className="eyebrow">Question set</p><h2 className="mt-1 text-2xl">Questions in this enquiry</h2></div>
+            <p className="text-sm text-muted">{detail.members.length} selected</p>
+          </div>
+
+          {detail.members.length === 0 ? (
+            <EmptyState>No questions selected yet. Add at least two before prioritisation can begin.</EmptyState>
           ) : (
-            <ul className="space-y-2 list-none p-0">
-              {addable.map((c) => (
-                <li key={c.id}>
-                  <Card className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-                    <div className="min-w-0 break-words text-ink">{c.canonicalText}</div>
-                    <Button
-                      type="button"
-                      className="shrink-0 self-start sm:self-auto"
-                      onClick={() => add(c.id)}
-                      disabled={busy}
-                    >
-                      Add
-                    </Button>
-                  </Card>
+            <ol className="divide-y divide-line border-y border-line pl-7">
+              {detail.members.map((member) => <li key={member.id} className="py-3 pl-2 text-ink">{member.canonicalText}</li>)}
+            </ol>
+          )}
+
+          <details>
+            <summary className="cursor-pointer text-sm font-medium text-moss hover:underline">Add questions from the live bank ({addable.length} available)</summary>
+            <div className="mt-4">
+              {addable.length === 0 ? (
+                <p className="text-sm text-muted">No more published questions are available to add.</p>
+              ) : (
+                <ul className="divide-y divide-line border-y border-line list-none p-0">
+                  {addable.map((candidate) => (
+                    <li key={candidate.id} className="flex flex-col gap-3 py-4 sm:flex-row sm:items-center sm:justify-between">
+                      <div className="min-w-0">
+                        <p className="break-words text-ink">{candidate.canonicalText}</p>
+                        {candidate.state === 'ranked' && <p className="mt-1 text-xs text-muted">Previously prioritised — reusable here</p>}
+                      </div>
+                      <Button type="button" variant="ghost" onClick={() => add(candidate.id)} disabled={busy}>Add to enquiry</Button>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          </details>
+        </section>
+      )}
+
+      {(state === 'comparing' || state === 'closed') && (
+        <section className="space-y-4">
+          <div><p className="eyebrow">Emerging picture</p><h2 className="mt-1 text-2xl">{state === 'closed' ? 'What rose to the top' : 'Where the questions currently stand'}</h2></div>
+          {ranked.length === 0 ? (
+            <EmptyState>No comparisons have been recorded yet.</EmptyState>
+          ) : (
+            <ol className="divide-y divide-line border-y border-line list-none p-0">
+              {ranked.map((row, index) => (
+                <li key={row.questionId} className="grid gap-2 py-4 sm:grid-cols-[3rem_minmax(0,1fr)_auto] sm:items-center sm:gap-4">
+                  <span className="font-display text-xl text-moss">#{index + 1}</span>
+                  <div><p className="text-ink">{textById.get(row.questionId) ?? row.questionId}</p><p className="mt-1 text-sm text-muted">{row.nComparisons} head-to-head comparison{row.nComparisons === 1 ? '' : 's'}</p></div>
+                  <details className="text-sm sm:text-right"><summary className="cursor-pointer text-muted">Technical score</summary><p className="mt-1 text-muted">μ {row.mu.toFixed(1)} · σ {row.sigma.toFixed(1)}</p></details>
                 </li>
               ))}
-            </ul>
+            </ol>
           )}
+        </section>
+      )}
+
+      {state === 'comparing' && (
+        <details className="rounded-lg border border-line p-4">
+          <summary className="cursor-pointer font-medium text-ink">Preview the comparison experience</summary>
+          <div className="mt-4 space-y-4">
+            {!pair ? (
+              <Button type="button" variant="ghost" onClick={async () => { setBusy(true); await refreshPair(); setBusy(false) }} disabled={busy}>Preview next pair</Button>
+            ) : (
+              <Card className="space-y-4 bg-surface">
+                <p className="text-sm text-muted">Which question is more {detail.campaign.comparisonAxis}?</p>
+                <div className="grid gap-3 sm:grid-cols-2">
+                  <Button type="button" variant="ghost" onClick={() => judge(pair.a.id)} disabled={busy}>{pair.a.canonicalText}</Button>
+                  <Button type="button" variant="ghost" onClick={() => judge(pair.b.id)} disabled={busy}>{pair.b.canonicalText}</Button>
+                </div>
+                <div className="flex items-center justify-between gap-3">
+                  <Button type="button" variant="quiet" onClick={() => judge(null)} disabled={busy}>Can&rsquo;t decide</Button>
+                  <details className="text-xs text-muted"><summary className="cursor-pointer">Why this pair?</summary><p className="mt-1">{pair.servedReason}</p></details>
+                </div>
+              </Card>
+            )}
+          </div>
+        </details>
+      )}
+
+      {state === 'closed' && (
+        <section className="space-y-3">
+          <div><p className="eyebrow">Interpretation</p><h2 className="mt-1 text-2xl">What might this add up to?</h2></div>
+          <SynthesisPanel campaignId={id} />
         </section>
       )}
     </AdminShell>

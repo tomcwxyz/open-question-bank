@@ -2,7 +2,7 @@ import { test, expect } from '@playwright/test'
 
 // Requires the docker stack up, the dev db seeded, and ADMIN_PASSWORD/ADMIN_SESSION_SECRET in .env.
 // The dev server runs with REASONING_PROVIDER=mock (see playwright.config.ts), so no live model is needed.
-test('admin refines a clustered question (suggest → edit → accept)', async ({ page, request }) => {
+test('admin reviews wording and keeps the final decision human', async ({ page, request }) => {
   const password = process.env.ADMIN_PASSWORD ?? 'admin'
   const unique = `e2e refine ${Date.now()} — how do we fix education?`
 
@@ -11,7 +11,6 @@ test('admin refines a clustered question (suggest → edit → accept)', async (
     data: { rawText: unique, visibility: 'public', decision: { type: 'new' } },
   })
   expect(created.ok()).toBeTruthy()
-  // Public submit returns { status, question: { id, canonicalText } } (src/app/api/questions/route.ts).
   const {
     question: { id },
   } = await created.json()
@@ -25,23 +24,25 @@ test('admin refines a clustered question (suggest → edit → accept)', async (
   const approve = await page.request.post(`/api/admin/questions/${id}/approve`)
   expect(approve.ok()).toBeTruthy()
 
-  // Open the refinement page; our question should be listed.
   await page.goto('/admin/refinement')
+  await expect(page.getByRole('heading', { name: 'Make the wording clearer' })).toBeVisible()
+
   const row = page.locator('li', { hasText: unique })
   await expect(row).toBeVisible()
-  await row.getByRole('button', { name: 'Suggest refinement' }).click()
+  await row.getByRole('button', { name: 'Review wording →' }).click()
 
-  // The mock suggestion appears in the editable textarea; edit it, then accept.
-  const textarea = page.getByLabel('Suggested (editable):')
+  // The mock suggestion starts in the final-wording field. The human can edit it before saving.
+  const textarea = page.getByLabel('Final wording')
   await expect(textarea).toHaveValue(/refined/)
   await textarea.fill('human-corrected question')
-  await page.getByRole('button', { name: 'Save edit' }).click()
-  await expect(page.getByRole('status')).toContainText(/recorded: edit/i)
+  await page.getByRole('button', { name: 'Save this wording' }).click()
+  await expect(page.getByRole('status')).toContainText(/wording saved/i)
 
-  // The refinement was recorded and canonical_text updated.
+  // Provenance still records that this was a human edit of an AI suggestion.
   const history = await page.request.get(`/api/admin/questions/${id}/refinements`)
   const { refinements } = await history.json()
   expect(refinements).toHaveLength(1)
+  expect(refinements[0].action).toBe('edit')
   expect(refinements[0].after).toBe('human-corrected question')
   expect(refinements[0].llmSuggestedText).toMatch(/refined/)
 })

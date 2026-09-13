@@ -15,6 +15,16 @@ export type TopCampaignQuestion = RailQuestion & {
 }
 export type MostAskedQuestion = RailQuestion & { clusterSize: number }
 export type ThemeCount = { theme: string; count: number }
+export type ActiveQuestionSignal = {
+  id: string
+  canonicalText: string
+  campaignId: string
+  campaignPrompt: string
+  comparisonAxis: string
+  nComparisons: number
+}
+export type RisingQuestion = ActiveQuestionSignal & { position: number }
+export type NeedsInputQuestion = ActiveQuestionSignal
 
 const PUBLIC_STATES = ['canonical', 'ranked'] as const
 
@@ -24,8 +34,125 @@ export async function recentQuestions(limit = 6, workspaceId?: string): Promise<
 }
 
 /**
+ * Questions currently near the top of active prioritisation enquiries.
+ *
+ * Crucially, `position` is calculated within each campaign. We do not compare raw TrueSkill
+ * mu values across campaigns and pretend they form a global Question Bank score.
+ */
+export async function risingQuestions(
+  limit = 6,
+  workspaceId?: string,
+): Promise<RisingQuestion[]> {
+  const ws = workspaceId ?? (await getActiveWorkspaceId())
+  const result = await db.execute(sql`
+    WITH ranked AS (
+      SELECT
+        s.campaign_id,
+        s.question_id,
+        s.n_comparisons,
+        s.last_updated,
+        ROW_NUMBER() OVER (
+          PARTITION BY s.campaign_id
+          ORDER BY s.mu DESC, s.sigma ASC, s.question_id
+        ) AS position
+      FROM score s
+      JOIN campaign c ON c.id = s.campaign_id
+      WHERE c.workspace_id = ${ws} AND c.state = 'comparing'
+    )
+    SELECT
+      r.question_id,
+      q.canonical_text,
+      r.campaign_id,
+      c.prompt,
+      c.comparison_axis,
+      r.n_comparisons,
+      r.position
+    FROM ranked r
+    JOIN campaign c ON c.id = r.campaign_id
+    JOIN question q ON q.id = r.question_id
+    WHERE q.workspace_id = ${ws} AND r.position <= 3
+    ORDER BY c.opens_at DESC NULLS LAST, r.position ASC, r.last_updated DESC
+    LIMIT ${limit}
+  `)
+
+  return result.rows.map((r) => {
+    const row = r as {
+      question_id: string
+      canonical_text: string
+      campaign_id: string
+      prompt: string
+      comparison_axis: string
+      n_comparisons: number
+      position: number | string
+    }
+    return {
+      id: row.question_id,
+      canonicalText: row.canonical_text,
+      campaignId: row.campaign_id,
+      campaignPrompt: row.prompt,
+      comparisonAxis: row.comparison_axis,
+      nComparisons: Number(row.n_comparisons),
+      position: Number(row.position),
+    }
+  })
+}
+
+/**
+ * Questions in active enquiries where more human judgement would be most useful.
+ *
+ * Low comparison count is the primary signal; TrueSkill uncertainty (`sigma`) breaks ties.
+ * Sigma is deliberately not returned to the public UI — the product translation is simply
+ * "this still needs input". The judgement route continues to choose the actual pair adaptively.
+ */
+export async function needsInputQuestions(
+  limit = 6,
+  workspaceId?: string,
+): Promise<NeedsInputQuestion[]> {
+  const ws = workspaceId ?? (await getActiveWorkspaceId())
+  const result = await db.execute(sql`
+    SELECT
+      s.question_id,
+      q.canonical_text,
+      s.campaign_id,
+      c.prompt,
+      c.comparison_axis,
+      s.n_comparisons
+    FROM score s
+    JOIN campaign c ON c.id = s.campaign_id
+    JOIN question q ON q.id = s.question_id
+    WHERE c.workspace_id = ${ws}
+      AND c.state = 'comparing'
+      AND q.workspace_id = ${ws}
+    ORDER BY s.n_comparisons ASC, s.sigma DESC, s.last_updated ASC, s.question_id
+    LIMIT ${limit}
+  `)
+
+  return result.rows.map((r) => {
+    const row = r as {
+      question_id: string
+      canonical_text: string
+      campaign_id: string
+      prompt: string
+      comparison_axis: string
+      n_comparisons: number
+    }
+    return {
+      id: row.question_id,
+      canonicalText: row.canonical_text,
+      campaignId: row.campaign_id,
+      campaignPrompt: row.prompt,
+      comparisonAxis: row.comparison_axis,
+      nComparisons: Number(row.n_comparisons),
+    }
+  })
+}
+
+/**
  * For the most recently CLOSED campaigns, the single highest-mu (winning) question each,
  * labelled with its campaign. One row per campaign; campaign-anchored, not a global score.
+ *
+ * Retained as a public API compatibility rail while v0.3 moves the default Questions surface
+ * towards active participation.
  */
 export async function topOfRecentCampaigns(
   limit = 6,
@@ -176,7 +303,6 @@ export async function questionGraph(
 ): Promise<QuestionGraph> {
   const ws = workspaceId ?? (await getActiveWorkspaceId())
 
-  // Fetch published questions with their theme and cluster.
   const rows = await db
     .select({
       id: question.id,
@@ -192,7 +318,6 @@ export async function questionGraph(
 
   if (rows.length === 0) return { nodes: [], edges: [] }
 
-  // Variant counts (community demand → node size).
   const variantCounts = await getVariantCounts(rows.map((r) => r.id))
 
   const nodes: GraphNode[] = rows.map((r) => ({
@@ -204,8 +329,6 @@ export async function questionGraph(
     variantCount: variantCounts.get(r.id) ?? 0,
   }))
 
-  // Edges: connect questions that share a cluster. O(n²) but only within
-  // cluster groups, and the total is capped by maxNodes.
   const byCluster = new Map<string, GraphNode[]>()
   for (const node of nodes) {
     if (!node.clusterId) continue
