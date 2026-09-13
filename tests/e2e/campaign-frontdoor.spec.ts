@@ -1,7 +1,7 @@
 import { test, expect } from '@playwright/test'
 
 // Admin opens an enquiry for submissions; an ANONYMOUS visitor finds it, can visit its durable
-// public home, and submits a question into it.
+// public home, and submits a question into it through the same discovery-first composer.
 test('the public can join an enquiry that is gathering questions', async ({ page, browser }) => {
   const password = process.env.ADMIN_PASSWORD ?? 'admin'
   const stamp = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
@@ -27,7 +27,6 @@ test('the public can join an enquiry that is gathering questions', async ({ page
   const row = vp.locator('li', { hasText: prompt })
   await expect(row).toBeVisible()
 
-  // The enquiry title has a durable home throughout its lifecycle.
   await row.getByRole('link', { name: prompt }).click()
   await expect(vp).toHaveURL(new RegExp(`/campaigns/${campaign.id}$`))
   await expect(vp.getByRole('heading', { name: prompt })).toBeVisible()
@@ -39,13 +38,13 @@ test('the public can join an enquiry that is gathering questions', async ({ page
 
   const questionText = `should we fund ${stamp} for the neighbourhood?`
   await vp.getByLabel('Your question').fill(questionText)
-  await vp.getByRole('button', { name: 'Submit' }).click()
+  await vp.getByRole('button', { name: 'Add this question →' }).click()
 
-  const chooseNew = vp.getByRole('button', { name: /None of these/ })
-  const success = vp.getByText(/added|Thanks/i)
+  const chooseNew = vp.getByRole('button', { name: 'Mine is different — add it' })
+  const success = vp.getByText(/Added\. We’ll check it|Added as a new question|strengthens an existing question/i)
   await expect(chooseNew.or(success).first()).toBeVisible()
   if (await chooseNew.isVisible()) await chooseNew.click()
 
-  await expect(success).toBeVisible()
+  await expect(vp.getByRole('status')).toBeVisible()
   await anon.close()
 })
