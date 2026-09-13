@@ -20,6 +20,7 @@ interface Enquiry {
 }
 
 interface EnquiryAction extends Enquiry {
+  phase: 'gathering' | 'prioritising'
   actionHref: string
   actionLabel: string
 }
@@ -60,13 +61,15 @@ export function HomeSignals() {
           const data = (await campaignResponse.json()) as CampaignResponse
           const acceptingQuestions = (data.openForSubmission ?? []).map((enquiry) => ({
             ...enquiry,
+            phase: 'gathering' as const,
             actionHref: `/campaigns/${enquiry.id}/submit`,
             actionLabel: 'Add what we should ask →',
           }))
           const prioritising = (data.openForJudging ?? []).map((enquiry) => ({
             ...enquiry,
+            phase: 'prioritising' as const,
             actionHref: `/judge/${enquiry.id}`,
-            actionLabel: 'Help decide what matters →',
+            actionLabel: 'Help decide what matters most →',
           }))
           const active = [...acceptingQuestions, ...prioritising]
           const unique = active.filter(
@@ -79,7 +82,7 @@ export function HomeSignals() {
       }
     }
 
-    load()
+    void load()
     return () => {
       cancelled = true
     }
@@ -115,7 +118,7 @@ export function HomeSignals() {
                 </span>
                 {question.clusterSize && question.clusterSize > 1 ? (
                   <span className="text-sm text-muted whitespace-nowrap">
-                    {question.clusterSize} similar submissions
+                    {question.clusterSize} submissions asked versions of this
                   </span>
                 ) : (
                   <span className="text-sm text-muted">Explore →</span>
@@ -147,9 +150,16 @@ export function HomeSignals() {
           <div className="space-y-3">
             {enquiries.map((enquiry) => (
               <Card key={enquiry.id} className="space-y-3">
-                <p className="font-display text-xl leading-snug text-ink">{enquiry.prompt}</p>
+                <Link
+                  href={`/campaigns/${enquiry.id}`}
+                  className="block font-display text-xl leading-snug text-ink no-underline hover:text-moss hover:no-underline"
+                >
+                  {enquiry.prompt}
+                </Link>
                 <p className="text-sm text-muted">
-                  {enquiry.questionCount} question{enquiry.questionCount === 1 ? '' : 's'} in the conversation
+                  {enquiry.phase === 'gathering'
+                    ? 'Gathering the questions people think are worth asking.'
+                    : `${enquiry.questionCount} question${enquiry.questionCount === 1 ? '' : 's'} ready for prioritisation.`}
                 </p>
                 <Link href={enquiry.actionHref} className={buttonClasses('ghost', 'w-full')}>
                   {enquiry.actionLabel}
