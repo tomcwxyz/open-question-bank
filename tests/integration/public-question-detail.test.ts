@@ -120,7 +120,7 @@ describe('getPublicQuestion', () => {
     expect(JSON.stringify(detail)).not.toContain('secret-token')
   })
 
-  it('keeps a question public while its public enquiry is comparing', async () => {
+  it('keeps a published question stable while its public enquiry is comparing', async () => {
     const a = await q('How should local transport improve?')
     const b = await q('What would make walking easier?')
     const c = await createCampaign({ prompt: 'What should this place focus on?', comparisonAxis: 'importance' })
@@ -128,12 +128,12 @@ describe('getPublicQuestion', () => {
     await openComparison(c.id)
 
     const detail = await getPublicQuestion(a)
-    expect(detail.state).toBe('under_comparison')
+    expect(detail.state).toBe('canonical')
     expect(detail.campaigns).toContainEqual({ id: c.id, prompt: c.prompt, state: 'comparing' })
     expect(JSON.stringify(detail)).not.toContain('secret-token')
   })
 
-  it('does not expose a stray under-comparison record without a public comparing enquiry', async () => {
+  it('does not expose a stray legacy under-comparison record without a public comparing enquiry', async () => {
     const hidden = await q('hidden in-flight question', 'under_comparison')
     await expect(getPublicQuestion(hidden)).rejects.toBeInstanceOf(NotFoundError)
   })
