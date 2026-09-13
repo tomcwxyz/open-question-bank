@@ -1,11 +1,12 @@
 'use client'
 
-import { use, useCallback, useEffect, useState } from 'react'
+import { use, useCallback, useEffect, useMemo, useState } from 'react'
+import Link from 'next/link'
 import { AdminShell } from '@/components/ui/AdminShell'
-import { Button } from '@/components/ui/Button'
+import { Button, buttonClasses } from '@/components/ui/Button'
 import { Card } from '@/components/ui/Card'
 import { Notice } from '@/components/ui/Notice'
-import { Stamp } from '@/components/ui/Stamp'
+import { EmptyState } from '@/components/ui/EmptyState'
 import { SynthesisPanel } from '@/components/ui/SynthesisPanel'
 
 interface Member {
@@ -33,6 +34,14 @@ interface Candidate {
   canonicalText: string
 }
 
+function stageCopy(state: string) {
+  if (state === 'draft') return { label: 'Preparing', summary: 'Choose the starting questions and decide how you want people to take part.' }
+  if (state === 'open') return { label: 'Gathering questions', summary: 'The enquiry is public and people can add what they think should be explored.' }
+  if (state === 'comparing') return { label: 'Prioritising', summary: 'People are comparing questions two at a time to clarify what matters most.' }
+  if (state === 'closed') return { label: 'Complete', summary: 'The prioritised result is published. You can now interpret and synthesise what emerged.' }
+  return { label: state, summary: 'This enquiry is in an operational state.' }
+}
+
 export default function CampaignDetailPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params)
   const [detail, setDetail] = useState<CampaignDetail | null>(null)
@@ -44,7 +53,7 @@ export default function CampaignDetailPage({ params }: { params: Promise<{ id: s
   const load = useCallback(async () => {
     const res = await fetch(`/api/admin/campaigns/${id}`)
     if (res.ok) setDetail(await res.json())
-    else setMessage('Could not load this campaign.')
+    else setMessage('Could not load this enquiry.')
   }, [id])
 
   const loadCandidates = useCallback(async () => {
@@ -59,20 +68,19 @@ export default function CampaignDetailPage({ params }: { params: Promise<{ id: s
   }, [load, loadCandidates])
 
   const state = detail?.campaign.state
-  const memberIds = new Set(detail?.members.map((m) => m.id))
+  const stage = stageCopy(state ?? '')
+  const memberIds = useMemo(() => new Set(detail?.members.map((m) => m.id)), [detail?.members])
   const addable = candidates.filter((c) => !memberIds.has(c.id))
   const textById = new Map(detail?.members.map((m) => [m.id, m.canonicalText]))
 
-  // Fetch the next pair into state. Does NOT manage `busy`/errors — the caller
-  // owns that, so judge() can reuse it without an early `busy` release.
   async function refreshPair() {
     const res = await fetch(`/api/admin/campaigns/${id}/pair`)
     const data = await res.json()
     if (res.ok) {
       setPair(data.pair)
-      setMessage(data.pair ? '' : 'No more informative pairs — comparison has settled.')
+      setMessage(data.pair ? '' : 'There are no more informative pairs to compare right now.')
     } else {
-      setMessage(data.error ?? 'Error')
+      setMessage(data.error ?? 'Could not load a pair.')
     }
   }
 
@@ -89,6 +97,7 @@ export default function CampaignDetailPage({ params }: { params: Promise<{ id: s
         setMessage((await res.json()).error ?? 'Could not add the question.')
         return
       }
+      setMessage('Question added to this enquiry.')
       await load()
     } catch {
       setMessage('Network error — please try again.')
@@ -104,10 +113,12 @@ export default function CampaignDetailPage({ params }: { params: Promise<{ id: s
       const res = await fetch(`/api/admin/campaigns/${id}/${path}`, { method: 'POST' })
       const data = await res.json()
       if (!res.ok) {
-        // Keep the current pair on a failed transition — don't drop the admin's context.
-        setMessage(data.error ?? 'Error')
+        setMessage(data.error ?? 'Could not change the enquiry stage.')
       } else {
         setPair(null)
+        if (path === 'open-submission') setMessage('The enquiry is now gathering questions publicly.')
+        if (path === 'open') setMessage('Prioritisation is now open.')
+        if (path === 'close') setMessage('The result is now published.')
         await load()
       }
     } catch {
@@ -161,124 +172,237 @@ export default function CampaignDetailPage({ params }: { params: Promise<{ id: s
     return (
       <AdminShell>
         {message ? (
-          <Notice role="alert" tone="error">
-            {message}
-          </Notice>
+          <Notice role="alert" tone="error">{message}</Notice>
         ) : (
-          <p className="text-muted">Loading…</p>
+          <p className="text-muted">Loading enquiry…</p>
         )}
       </AdminShell>
     )
   }
 
+  const ranked = detail.scores.filter((score) => score.nComparisons > 0)
+
   return (
     <AdminShell>
-      <div className="space-y-1">
-        <p className="eyebrow">{detail.campaign.comparisonAxis} · {detail.campaign.state}</p>
-        <h1 className="text-3xl">{detail.campaign.prompt}</h1>
+      <div className="space-y-5 border-b border-line pb-6">
+        <Link href="/admin/campaigns" className="text-sm text-muted no-underline hover:text-ink hover:underline">
+          ← All enquiries
+        </Link>
+        <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_14rem] lg:items-end">
+          <div>
+            <p className="eyebrow">{stage.label}</p>
+            <h1 className="mt-1 max-w-4xl text-3xl sm:text-4xl leading-tight">{detail.campaign.prompt}</h1>
+            <p className="mt-3 max-w-2xl text-muted leading-relaxed">{stage.summary}</p>
+          </div>
+          <div className="text-sm text-muted lg:text-right">
+            <p>People compare by</p>
+            <p className="font-medium text-ink">{detail.campaign.comparisonAxis}</p>
+          </div>
+        </div>
       </div>
 
-      {message && (
-        <Notice role="status" tone="info">
-          {message}
-        </Notice>
-      )}
+      {message && <Notice role="status" tone="info">{message}</Notice>}
 
-      <div className="flex flex-wrap gap-2">
-        {state === 'draft' && (
-          <Button type="button" variant="ghost" onClick={() => transition('open-submission')} disabled={busy}>
-            Open for submission
-          </Button>
-        )}
-        {(state === 'draft' || state === 'open') && (
-          <Button type="button" onClick={() => transition('open')} disabled={busy}>
-            Open for comparison
-          </Button>
-        )}
-        {state === 'comparing' && (
-          <>
-            <Button type="button" onClick={getPair} disabled={busy}>
-              Get next pair
+      {state === 'draft' && (
+        <Card className="space-y-4">
+          <div>
+            <p className="eyebrow">Choose how to begin</p>
+            <h2 className="mt-1 text-2xl">How should people take part first?</h2>
+            <p className="mt-2 max-w-2xl text-sm leading-relaxed text-muted">
+              You can open the enquiry to collect more questions, or move straight to prioritisation once the starting set is strong enough.
+            </p>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            <Button type="button" variant="accent" onClick={() => transition('open-submission')} disabled={busy}>
+              Open to gather questions
             </Button>
-            <Button type="button" variant="quiet" onClick={() => transition('close')} disabled={busy}>
-              Close campaign
-            </Button>
-          </>
-        )}
-      </div>
-
-      {state === 'open' && (
-        <Stamp>Public submission link: /campaigns/{detail.campaign.id}/submit</Stamp>
-      )}
-
-      {state === 'comparing' && (
-        <Stamp>Public judging link: /judge/{detail.campaign.id}</Stamp>
-      )}
-
-      {state === 'closed' && (
-        <Stamp>Public agenda: /campaigns/{detail.campaign.id}</Stamp>
-      )}
-
-      {state === 'closed' && <SynthesisPanel campaignId={detail.campaign.id} />}
-
-      {state === 'comparing' && pair && (
-        <Card className="space-y-3">
-          <Stamp>{pair.servedReason}</Stamp>
-          <div className="grid gap-3 sm:grid-cols-2">
-            <Button type="button" variant="ghost" onClick={() => judge(pair.a.id)} disabled={busy}>
-              {pair.a.canonicalText}
-            </Button>
-            <Button type="button" variant="ghost" onClick={() => judge(pair.b.id)} disabled={busy}>
-              {pair.b.canonicalText}
+            <Button type="button" variant="ghost" onClick={() => transition('open')} disabled={busy}>
+              Start prioritisation
             </Button>
           </div>
-          <Button type="button" variant="quiet" onClick={() => judge(null)} disabled={busy}>
-            Can&rsquo;t decide
-          </Button>
         </Card>
       )}
 
-      <section className="space-y-2">
-        <p className="eyebrow">Ranking</p>
-        {detail.scores.length === 0 ? (
-          <p className="text-muted">No scores yet.</p>
-        ) : (
-          <ul className="space-y-2 list-none p-0">
-            {detail.scores.map((s) => (
-              <li key={s.questionId} className="text-sm text-ink">
-                <span className="font-medium">μ {s.mu.toFixed(1)}</span>{' '}
-                <span className="text-muted">σ {s.sigma.toFixed(1)} · {s.nComparisons} comparisons</span>
-                <div className="break-words">{textById.get(s.questionId) ?? s.questionId}</div>
-              </li>
-            ))}
-          </ul>
-        )}
-      </section>
+      {state === 'open' && (
+        <Card className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-center">
+          <div>
+            <p className="eyebrow">Public participation is open</p>
+            <h2 className="mt-1 text-2xl">Gathering questions</h2>
+            <p className="mt-2 text-sm leading-relaxed text-muted">
+              Share the public enquiry page while you are collecting what people think should be asked. When the set feels ready, move into prioritisation.
+            </p>
+          </div>
+          <div className="flex flex-wrap gap-2 lg:justify-end">
+            <Link href={`/campaigns/${detail.campaign.id}`} className={buttonClasses('ghost')}>
+              View public enquiry ↗
+            </Link>
+            <Button type="button" variant="accent" onClick={() => transition('open')} disabled={busy}>
+              Start prioritisation
+            </Button>
+          </div>
+        </Card>
+      )}
+
+      {state === 'comparing' && (
+        <Card className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-center">
+          <div>
+            <p className="eyebrow">Public participation is open</p>
+            <h2 className="mt-1 text-2xl">People are deciding what matters most</h2>
+            <p className="mt-2 text-sm leading-relaxed text-muted">
+              Keep prioritisation open while useful comparisons are still coming in. Closing publishes the current result.
+            </p>
+          </div>
+          <div className="flex flex-wrap gap-2 lg:justify-end">
+            <Link href={`/judge/${detail.campaign.id}`} className={buttonClasses('ghost')}>
+              View prioritisation ↗
+            </Link>
+            <Button type="button" variant="accent" onClick={() => transition('close')} disabled={busy}>
+              Close and publish result
+            </Button>
+          </div>
+        </Card>
+      )}
+
+      {state === 'closed' && (
+        <Card className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-center">
+          <div>
+            <p className="eyebrow">Published result</p>
+            <h2 className="mt-1 text-2xl">The collective picture is now public</h2>
+            <p className="mt-2 text-sm leading-relaxed text-muted">
+              The ordering remains traceable to the pairwise choices underneath it. You can now use synthesis to explore what the result might add up to.
+            </p>
+          </div>
+          <Link href={`/campaigns/${detail.campaign.id}`} className={buttonClasses('ghost', 'justify-self-start lg:justify-self-end')}>
+            View public result ↗
+          </Link>
+        </Card>
+      )}
 
       {(state === 'draft' || state === 'open') && (
-        <section className="space-y-2">
-          <p className="eyebrow">Add canonical questions</p>
-          {addable.length === 0 ? (
-            <p className="text-muted">No more canonical questions to add.</p>
+        <section className="space-y-5">
+          <div className="flex items-end justify-between gap-4">
+            <div>
+              <p className="eyebrow">Question set</p>
+              <h2 className="mt-1 text-2xl">Questions in this enquiry</h2>
+            </div>
+            <p className="text-sm text-muted">{detail.members.length} selected</p>
+          </div>
+
+          {detail.members.length === 0 ? (
+            <EmptyState>No questions have been selected yet. Add at least two before prioritisation can begin.</EmptyState>
           ) : (
-            <ul className="space-y-2 list-none p-0">
-              {addable.map((c) => (
-                <li key={c.id}>
-                  <Card className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-                    <div className="min-w-0 break-words text-ink">{c.canonicalText}</div>
-                    <Button
-                      type="button"
-                      className="shrink-0 self-start sm:self-auto"
-                      onClick={() => add(c.id)}
-                      disabled={busy}
-                    >
-                      Add
-                    </Button>
-                  </Card>
+            <ol className="divide-y divide-line border-y border-line pl-7">
+              {detail.members.map((member) => (
+                <li key={member.id} className="py-3 pl-2 text-ink">{member.canonicalText}</li>
+              ))}
+            </ol>
+          )}
+
+          <details className="group">
+            <summary className="cursor-pointer text-sm font-medium text-moss hover:underline">
+              Add questions from the bank ({addable.length} available)
+            </summary>
+            <div className="mt-4">
+              {addable.length === 0 ? (
+                <p className="text-sm text-muted">No more published questions are available to add.</p>
+              ) : (
+                <ul className="divide-y divide-line border-y border-line list-none p-0">
+                  {addable.map((candidate) => (
+                    <li key={candidate.id} className="flex flex-col gap-3 py-4 sm:flex-row sm:items-center sm:justify-between">
+                      <p className="min-w-0 break-words text-ink">{candidate.canonicalText}</p>
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        className="shrink-0 self-start sm:self-auto"
+                        onClick={() => add(candidate.id)}
+                        disabled={busy}
+                      >
+                        Add to enquiry
+                      </Button>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          </details>
+        </section>
+      )}
+
+      {(state === 'comparing' || state === 'closed') && (
+        <section className="space-y-4">
+          <div>
+            <p className="eyebrow">Emerging picture</p>
+            <h2 className="mt-1 text-2xl">{state === 'closed' ? 'What rose to the top' : 'Where the questions currently stand'}</h2>
+          </div>
+
+          {ranked.length === 0 ? (
+            <EmptyState>No comparisons have been recorded yet.</EmptyState>
+          ) : (
+            <ol className="divide-y divide-line border-y border-line list-none p-0">
+              {ranked.map((score, index) => (
+                <li key={score.questionId} className="grid gap-2 py-4 sm:grid-cols-[3rem_minmax(0,1fr)_auto] sm:items-center sm:gap-4">
+                  <span className="font-display text-xl text-moss">#{index + 1}</span>
+                  <div className="min-w-0">
+                    <p className="break-words text-ink">{textById.get(score.questionId) ?? score.questionId}</p>
+                    <p className="mt-1 text-sm text-muted">
+                      {score.nComparisons} head-to-head comparison{score.nComparisons === 1 ? '' : 's'}
+                    </p>
+                  </div>
+                  <details className="text-sm sm:text-right">
+                    <summary className="cursor-pointer text-muted hover:text-ink">Technical score</summary>
+                    <p className="mt-1 text-muted">μ {score.mu.toFixed(1)} · σ {score.sigma.toFixed(1)}</p>
+                  </details>
                 </li>
               ))}
-            </ul>
+            </ol>
           )}
+        </section>
+      )}
+
+      {state === 'comparing' && (
+        <details className="rounded-lg border border-line p-4">
+          <summary className="cursor-pointer font-medium text-ink">Preview the comparison experience</summary>
+          <div className="mt-4 space-y-4">
+            <p className="text-sm text-muted">
+              Use this only to test or contribute a comparison yourself. Public participants use the prioritisation page above.
+            </p>
+            {!pair ? (
+              <Button type="button" variant="ghost" onClick={getPair} disabled={busy}>
+                Preview next pair
+              </Button>
+            ) : (
+              <Card className="space-y-4 bg-surface">
+                <p className="text-sm text-muted">Which question is more {detail.campaign.comparisonAxis}?</p>
+                <div className="grid gap-3 sm:grid-cols-2">
+                  <Button type="button" variant="ghost" onClick={() => judge(pair.a.id)} disabled={busy}>
+                    {pair.a.canonicalText}
+                  </Button>
+                  <Button type="button" variant="ghost" onClick={() => judge(pair.b.id)} disabled={busy}>
+                    {pair.b.canonicalText}
+                  </Button>
+                </div>
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <Button type="button" variant="quiet" onClick={() => judge(null)} disabled={busy}>
+                    Can&rsquo;t decide
+                  </Button>
+                  <details className="text-xs text-muted">
+                    <summary className="cursor-pointer">Why this pair?</summary>
+                    <p className="mt-1">{pair.servedReason}</p>
+                  </details>
+                </div>
+              </Card>
+            )}
+          </div>
+        </details>
+      )}
+
+      {state === 'closed' && (
+        <section className="space-y-3">
+          <div>
+            <p className="eyebrow">Interpretation</p>
+            <h2 className="mt-1 text-2xl">What might this add up to?</h2>
+          </div>
+          <SynthesisPanel campaignId={detail.campaign.id} />
         </section>
       )}
     </AdminShell>
