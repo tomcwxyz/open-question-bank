@@ -64,9 +64,10 @@ afterAll(async () => {
 
 describe('active question signals', () => {
   it('keeps Rising positions within an enquiry and prioritises uncertain questions for input', async () => {
-    const first = await insertQuestion('First emerging question', 'under_comparison')
-    const second = await insertQuestion('Second emerging question', 'under_comparison')
-    const uncertain = await insertQuestion('Question that still needs judgement', 'under_comparison')
+    // Active enquiry membership, not question.state, now represents participation.
+    const first = await insertQuestion('First emerging question', 'canonical')
+    const second = await insertQuestion('Second emerging question', 'canonical')
+    const uncertain = await insertQuestion('Question that still needs judgement', 'canonical')
 
     const [active] = await db
       .insert(campaign)
@@ -78,6 +79,11 @@ describe('active question signals', () => {
       })
       .returning()
 
+    await db.insert(campaignQuestion).values([
+      { campaignId: active.id, questionId: first },
+      { campaignId: active.id, questionId: second },
+      { campaignId: active.id, questionId: uncertain },
+    ])
     await db.insert(score).values([
       { campaignId: active.id, questionId: first, mu: 32, sigma: 3, nComparisons: 6 },
       { campaignId: active.id, questionId: second, mu: 29, sigma: 4, nComparisons: 2 },
