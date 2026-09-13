@@ -1,90 +1,72 @@
 'use client'
 
-import { useCallback, useEffect, useState } from 'react'
 import Link from 'next/link'
-import { PageShell } from '@/components/ui/PageShell'
+import { useCallback, useEffect, useState } from 'react'
+import { AppShell } from '@/components/ui/AppShell'
 import { PublicNav } from '@/components/ui/PublicNav'
 import { Button, buttonClasses } from '@/components/ui/Button'
-import { Card } from '@/components/ui/Card'
 import { Notice } from '@/components/ui/Notice'
-import { Stamp } from '@/components/ui/Stamp'
 import { EmptyState } from '@/components/ui/EmptyState'
 import { Input, Label } from '@/components/ui/Field'
 import { QuestionGraph } from '@/components/charts/QuestionGraph'
+import { QuestionListItem } from '@/components/questions/QuestionListItem'
 
-interface Result { id: string; canonicalText: string; state: 'canonical' | 'ranked'; rank?: number }
-interface Similar { id: string; canonicalText: string; state: 'canonical' | 'ranked'; distance: number }
-interface SimilarState { open: boolean; loading: boolean; items: Similar[]; error?: string }
-interface TopCampaign extends Result { campaignId: string; campaignPrompt: string; comparisonAxis: string; closesAt: string }
-interface MostAsked extends Result { clusterSize: number }
-interface ThemeCount { theme: string; count: number }
-interface Rails { recent: Result[]; topOfCampaigns: TopCampaign[]; mostAsked: MostAsked[]; themes: ThemeCount[] }
-interface GraphNode { id: string; canonicalText: string; state: string; theme: string | null; clusterId: string | null; variantCount: number }
-interface GraphEdge { source: string; target: string; clusterId: string }
-interface GraphData { nodes: GraphNode[]; edges: GraphEdge[] }
-
-const BANDS = [
-  { value: '', label: 'Any definedness' },
-  { value: 'high', label: 'High definedness' },
-  { value: 'medium', label: 'Medium definedness' },
-  { value: 'low', label: 'Low definedness' },
-]
-
-function Rail({ title, children }: { title: string; children: React.ReactNode }) {
-  return (
-    <section className="space-y-3">
-      <h2 className="text-xl">{title}</h2>
-      {children}
-    </section>
-  )
+interface Result {
+  id: string
+  canonicalText: string
+  state?: 'canonical' | 'ranked'
 }
 
-function QuestionCard({
-  r,
-  sim,
-  onToggleSimilar,
-}: {
-  r: Result
-  sim: SimilarState | undefined
-  onToggleSimilar: (id: string) => void
-}) {
-  return (
-    <Card className="space-y-2">
-      <Link href={`/questions/${r.id}`} className="break-words text-ink no-underline hover:underline">
-        {r.canonicalText}
-      </Link>
-      <div className="flex items-center justify-between gap-3">
-        <Stamp>{r.state}</Stamp>
-        <button
-          type="button"
-          onClick={() => onToggleSimilar(r.id)}
-          aria-expanded={sim?.open ?? false}
-          className={buttonClasses('quiet', 'shrink-0')}
-        >
-          {sim?.open ? 'Hide similar' : 'Find similar'}
-        </button>
-      </div>
-      {sim?.open && (
-        <div className="border-t border-line pt-2">
-          {sim.loading ? (
-            <p className="text-sm text-muted">Finding similar…</p>
-          ) : sim.error ? (
-            <p className="text-sm text-clay">{sim.error}</p>
-          ) : sim.items.length === 0 ? (
-            <p className="text-sm text-muted">No similar questions found.</p>
-          ) : (
-            <ul className="space-y-1 list-none p-0">
-              {sim.items.map((s) => (
-                <li key={s.id} className="text-sm">
-                  <Link href={`/questions/${s.id}`} className="text-moss">{s.canonicalText}</Link>
-                </li>
-              ))}
-            </ul>
-          )}
-        </div>
-      )}
-    </Card>
-  )
+interface Rising extends Result {
+  campaignId: string
+  campaignPrompt: string
+  comparisonAxis: string
+  nComparisons: number
+  position: number
+}
+
+interface NeedsInput extends Result {
+  campaignId: string
+  campaignPrompt: string
+  comparisonAxis: string
+  nComparisons: number
+}
+
+interface MostAsked extends Result {
+  clusterSize: number
+}
+
+interface ThemeCount {
+  theme: string
+  count: number
+}
+
+interface Rails {
+  recent: Result[]
+  mostAsked: MostAsked[]
+  themes: ThemeCount[]
+  rising: Rising[]
+  needsInput: NeedsInput[]
+}
+
+interface GraphNode {
+  id: string
+  canonicalText: string
+  state: string
+  theme: string | null
+  clusterId: string | null
+  variantCount: number
+}
+
+interface GraphEdge {
+  source: string
+  target: string
+  clusterId: string
+}
+
+interface GraphData {
+  nodes: GraphNode[]
+  edges: GraphEdge[]
 }
 
 export default function BrowsePage() {
@@ -93,55 +75,73 @@ export default function BrowsePage() {
   const [railsError, setRailsError] = useState('')
 
   const [queryInput, setQueryInput] = useState('')
-  const [band, setBand] = useState('')
   const [results, setResults] = useState<Result[]>([])
   const [page, setPage] = useState(0)
   const [hasMore, setHasMore] = useState(false)
   const [loading, setLoading] = useState(false)
   const [message, setMessage] = useState('')
   const [resultsTitle, setResultsTitle] = useState('')
-  const [similar, setSimilar] = useState<Record<string, SimilarState>>({})
-  const [graph, setGraph] = useState<GraphData | null>(null)
 
-  const loadRails = useCallback(async () => {
+  const [showMap, setShowMap] = useState(false)
+  const [graph, setGraph] = useState<GraphData | null>(null)
+  const [graphLoading, setGraphLoading] = useState(false)
+
+  const loadQuestions = useCallback(async () => {
     try {
-      const [railsRes, graphRes] = await Promise.all([
-        fetch('/api/browse'),
-        fetch('/api/browse/graph'),
-      ])
-      if (railsRes.ok) setRails(await railsRes.json())
+      const response = await fetch('/api/browse')
+      if (response.ok) setRails(await response.json())
       else setRailsError('Could not load the question bank.')
-      if (graphRes.ok) setGraph(await graphRes.json())
     } catch {
       setRailsError('Network error — please try again.')
     }
   }, [])
 
   useEffect(() => {
-    // eslint-disable-next-line react-hooks/set-state-in-effect
-    loadRails()
-  }, [loadRails])
+    void loadQuestions()
+  }, [loadQuestions])
 
-  const runSearch = useCallback(async (query: string, nextPage: number, bandValue: string) => {
+  useEffect(() => {
+    if (!showMap || graph || graphLoading) return
+    let cancelled = false
+
+    async function loadGraph() {
+      setGraphLoading(true)
+      try {
+        const response = await fetch('/api/browse/graph')
+        if (!cancelled && response.ok) setGraph(await response.json())
+      } finally {
+        if (!cancelled) setGraphLoading(false)
+      }
+    }
+
+    void loadGraph()
+    return () => {
+      cancelled = true
+    }
+  }, [showMap, graph, graphLoading])
+
+  const runSearch = useCallback(async (query: string, nextPage: number) => {
     setLoading(true)
     setMessage('')
     setMode('results')
-    setResultsTitle(`Results for "${query}"`)
+    setResultsTitle(`Questions matching “${query}”`)
+
     try {
       const params = new URLSearchParams({ q: query, page: String(nextPage) })
-      if (bandValue) params.set('definedness', bandValue)
-      const res = await fetch(`/api/questions/search?${params.toString()}`)
-      if (res.ok) {
-        const data = await res.json()
+      const response = await fetch(`/api/questions/search?${params.toString()}`)
+      if (response.ok) {
+        const data = await response.json()
         setResults(data.results)
         setHasMore(data.hasMore)
         setPage(data.page)
-        setSimilar({})
-      } else setMessage('Could not run that search.')
+      } else {
+        setMessage('Could not run that search.')
+      }
     } catch {
       setMessage('Network error — please try again.')
+    } finally {
+      setLoading(false)
     }
-    setLoading(false)
   }, [])
 
   const openTheme = useCallback(async (theme: string) => {
@@ -151,173 +151,291 @@ export default function BrowsePage() {
     setResultsTitle(theme)
     setHasMore(false)
     setPage(0)
+
     try {
-      const res = await fetch(`/api/questions?theme=${encodeURIComponent(theme)}`)
-      if (res.ok) {
-        setResults((await res.json()).questions)
-        setSimilar({})
-      } else setMessage('Could not load that theme.')
+      const response = await fetch(`/api/questions?theme=${encodeURIComponent(theme)}`)
+      if (response.ok) setResults((await response.json()).questions)
+      else setMessage('Could not load that theme.')
     } catch {
       setMessage('Network error — please try again.')
+    } finally {
+      setLoading(false)
     }
-    setLoading(false)
   }, [])
 
   const onSubmit = (event: React.FormEvent) => {
     event.preventDefault()
-    if (queryInput.trim().length === 0) return
-    runSearch(queryInput.trim(), 0, band)
+    const query = queryInput.trim()
+    if (!query) return
+    void runSearch(query, 0)
   }
 
-  const backToBrowse = () => {
+  const backToQuestions = () => {
     setMode('browse')
     setResults([])
     setMessage('')
     setQueryInput('')
   }
 
-  const toggleSimilar = useCallback(async (id: string) => {
-    const current = similar[id]
-    if (current?.open) {
-      setSimilar((prev) => ({ ...prev, [id]: { ...prev[id], open: false } }))
-      return
-    }
-    if (current && !current.error) {
-      setSimilar((prev) => ({ ...prev, [id]: { ...prev[id], open: true } }))
-      return
-    }
-    setSimilar((prev) => ({ ...prev, [id]: { open: true, loading: true, items: [] } }))
-    try {
-      const res = await fetch(`/api/questions/${id}/similar`)
-      if (res.ok) {
-        const data = await res.json()
-        setSimilar((prev) => ({ ...prev, [id]: { open: true, loading: false, items: data.similar } }))
-      } else {
-        setSimilar((prev) => ({ ...prev, [id]: { open: true, loading: false, items: [], error: 'Could not load similar questions.' } }))
-      }
-    } catch {
-      setSimilar((prev) => ({ ...prev, [id]: { open: true, loading: false, items: [], error: 'Network error.' } }))
-    }
-  }, [similar])
-
   return (
-    <PageShell nav={<PublicNav />} size="lg">
-      <div className="space-y-1">
-        <p className="eyebrow">Explore</p>
-        <h1 className="text-3xl">Browse the question bank</h1>
-      </div>
+    <AppShell nav={<PublicNav />}>
+      <header className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-end">
+        <div className="max-w-3xl space-y-2">
+          <p className="eyebrow">Questions</p>
+          <h1 className="text-4xl sm:text-5xl">What are people trying to figure out?</h1>
+          <p className="max-w-2xl text-lg leading-relaxed text-muted">
+            Explore questions people keep asking, see what is emerging in open enquiries, or find somewhere your judgement can help.
+          </p>
+        </div>
+        <Link href="/submit" className={buttonClasses('accent')}>
+          Ask a question
+        </Link>
+      </header>
 
-      <form onSubmit={onSubmit} className="space-y-3">
-        <div>
-          <Label htmlFor="q">Search</Label>
-          <Input id="q" name="q" value={queryInput} onChange={(e) => setQueryInput(e.target.value)} placeholder="e.g. community resilience" autoComplete="off" />
-        </div>
-        <div className="flex flex-wrap items-end gap-3">
+      <section className="rounded-xl border border-line bg-surface p-5 sm:p-6" aria-label="Find questions">
+        <form onSubmit={onSubmit} className="grid gap-3 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-end">
           <div>
-            <Label htmlFor="definedness">Filter</Label>
-            <select id="definedness" value={band} onChange={(e) => setBand(e.target.value)} className="w-full rounded-md border border-line bg-surface px-3 py-2 text-ink hover:border-sage transition-colors min-h-11">
-              {BANDS.map((b) => (<option key={b.value} value={b.value}>{b.label}</option>))}
-            </select>
+            <Label htmlFor="q">Search questions</Label>
+            <Input
+              id="q"
+              name="q"
+              value={queryInput}
+              onChange={(event) => setQueryInput(event.target.value)}
+              placeholder="What are you curious about?"
+              autoComplete="off"
+              className="text-base sm:text-lg"
+            />
           </div>
-          <Button type="submit" disabled={loading || queryInput.trim().length === 0}>{loading ? 'Searching…' : 'Search'}</Button>
-        </div>
-      </form>
+          <Button type="submit" disabled={loading || queryInput.trim().length === 0} className="sm:min-w-28">
+            {loading ? 'Searching…' : 'Search'}
+          </Button>
+        </form>
+
+        {mode === 'browse' && rails && rails.themes.some((theme) => theme.count > 0) ? (
+          <div className="mt-4 flex flex-wrap items-center gap-2 border-t border-line pt-4">
+            <span className="mr-1 text-sm text-muted">Explore a theme</span>
+            {rails.themes
+              .filter((theme) => theme.count > 0)
+              .map((theme) => (
+                <button
+                  key={theme.theme}
+                  type="button"
+                  onClick={() => void openTheme(theme.theme)}
+                  className={buttonClasses('quiet', 'min-h-9 px-3 py-1.5')}
+                >
+                  {theme.theme}
+                </button>
+              ))}
+          </div>
+        ) : null}
+      </section>
 
       {mode === 'results' ? (
-        <section className="space-y-3" aria-live="polite">
-          <div className="flex items-center justify-between">
-            <h2 className="text-xl">{resultsTitle}</h2>
-            <Button variant="ghost" onClick={backToBrowse}>← Back to browse</Button>
+        <section className="space-y-5" aria-live="polite">
+          <div className="flex flex-wrap items-center justify-between gap-4 border-b border-line pb-4">
+            <div>
+              <p className="eyebrow">Explore</p>
+              <h2 className="text-2xl sm:text-3xl">{resultsTitle}</h2>
+            </div>
+            <Button variant="ghost" onClick={backToQuestions}>
+              ← Back to questions
+            </Button>
           </div>
+
           {message ? (
             <Notice role="alert" tone="error">{message}</Notice>
           ) : results.length === 0 ? (
-            <EmptyState>No questions matched.</EmptyState>
+            <EmptyState>
+              No questions matched. You can try another search or add the question you were looking for.
+            </EmptyState>
           ) : (
-            <ul className="space-y-3 list-none p-0">
-              {results.map((r) => (
-                <li key={r.id}>
-                  <QuestionCard r={r} sim={similar[r.id]} onToggleSimilar={toggleSimilar} />
-                </li>
+            <div className="border-b border-line">
+              {results.map((result) => (
+                <QuestionListItem key={result.id} id={result.id} question={result.canonicalText} />
               ))}
-            </ul>
-          )}
-          {(page > 0 || hasMore) && results.length > 0 && (
-            <div className="flex items-center justify-between">
-              <Button variant="ghost" disabled={page === 0 || loading} onClick={() => runSearch(queryInput.trim(), page - 1, band)}>← Previous</Button>
-              <span className="text-sm text-muted">Page {page + 1}</span>
-              <Button variant="ghost" disabled={!hasMore || loading} onClick={() => runSearch(queryInput.trim(), page + 1, band)}>Next →</Button>
             </div>
           )}
+
+          {results.length === 0 && !message ? (
+            <Link href="/submit" className={buttonClasses('accent')}>
+              Ask this question
+            </Link>
+          ) : null}
+
+          {(page > 0 || hasMore) && results.length > 0 ? (
+            <div className="flex items-center justify-between gap-3">
+              <Button
+                variant="ghost"
+                disabled={page === 0 || loading}
+                onClick={() => void runSearch(queryInput.trim(), page - 1)}
+              >
+                ← Previous
+              </Button>
+              <span className="text-sm text-muted">Page {page + 1}</span>
+              <Button
+                variant="ghost"
+                disabled={!hasMore || loading}
+                onClick={() => void runSearch(queryInput.trim(), page + 1)}
+              >
+                Next →
+              </Button>
+            </div>
+          ) : null}
         </section>
       ) : railsError ? (
         <Notice role="alert" tone="error">{railsError}</Notice>
       ) : !rails ? (
-        <p className="text-muted">Loading…</p>
+        <p className="text-muted">Loading questions…</p>
       ) : (
-        <div className="space-y-8">
-          <Rail title="By theme">
-            <div className="flex flex-wrap gap-2">
-              {rails.themes.filter((t) => t.count > 0).map((t) => (
-                <button key={t.theme} type="button" onClick={() => openTheme(t.theme)} className={buttonClasses('quiet')}>
-                  {t.theme} ({t.count})
-                </button>
-              ))}
+        <div className="space-y-12">
+          <div className="grid gap-10 lg:grid-cols-[minmax(0,1.35fr)_minmax(18rem,0.65fr)] lg:gap-12">
+            <section aria-labelledby="rising-heading">
+              <div className="mb-3 max-w-2xl">
+                <p className="eyebrow">Taking shape</p>
+                <h2 id="rising-heading" className="text-3xl">Rising</h2>
+                <p className="mt-1 text-muted">
+                  Questions currently near the top of open enquiries. Positions belong to each enquiry — there is no global leaderboard.
+                </p>
+              </div>
+
+              {rails.rising.length === 0 ? (
+                <EmptyState>No enquiries are being prioritised right now.</EmptyState>
+              ) : (
+                <div className="border-b border-line">
+                  {rails.rising.map((question) => (
+                    <QuestionListItem
+                      key={`${question.campaignId}-${question.id}`}
+                      id={question.id}
+                      question={question.canonicalText}
+                      eyebrow={`#${question.position} in an open enquiry`}
+                      meta={
+                        <>
+                          <Link href={`/campaigns/${question.campaignId}`} className="text-moss no-underline hover:underline">
+                            {question.campaignPrompt}
+                          </Link>
+                          {' · '}still taking shape
+                        </>
+                      }
+                    />
+                  ))}
+                </div>
+              )}
+            </section>
+
+            <aside aria-labelledby="input-heading" className="lg:border-l lg:border-line lg:pl-8">
+              <div className="mb-3">
+                <p className="eyebrow">A useful five minutes</p>
+                <h2 id="input-heading" className="text-2xl">Needs your input</h2>
+                <p className="mt-1 text-sm leading-relaxed text-muted">
+                  These questions are in enquiries where more comparisons would make the emerging picture clearer.
+                </p>
+              </div>
+
+              {rails.needsInput.length === 0 ? (
+                <p className="border-t border-line py-4 text-sm text-muted">Nothing needs comparing right now.</p>
+              ) : (
+                <div className="border-b border-line">
+                  {rails.needsInput.slice(0, 4).map((question) => (
+                    <QuestionListItem
+                      key={`${question.campaignId}-${question.id}`}
+                      id={question.id}
+                      question={question.canonicalText}
+                      compact
+                      meta={question.campaignPrompt}
+                      trailing={
+                        <Link
+                          href={`/judge/${question.campaignId}`}
+                          className={buttonClasses('ghost', 'w-full sm:w-auto whitespace-nowrap')}
+                        >
+                          Help decide →
+                        </Link>
+                      }
+                    />
+                  ))}
+                </div>
+              )}
+            </aside>
+          </div>
+
+          <div className="grid gap-10 md:grid-cols-2 md:gap-12">
+            <section aria-labelledby="asked-heading">
+              <div className="mb-3">
+                <p className="eyebrow">Repeated</p>
+                <h2 id="asked-heading" className="text-2xl">Most asked</h2>
+                <p className="mt-1 text-sm text-muted">Questions that keep reappearing in different words.</p>
+              </div>
+              {rails.mostAsked.length === 0 ? (
+                <EmptyState>No repeated questions yet.</EmptyState>
+              ) : (
+                <div className="border-b border-line">
+                  {rails.mostAsked.slice(0, 5).map((question) => (
+                    <QuestionListItem
+                      key={question.id}
+                      id={question.id}
+                      question={question.canonicalText}
+                      compact
+                      meta={
+                        question.clusterSize > 1
+                          ? `${question.clusterSize} related questions in this cluster`
+                          : 'Part of a question cluster'
+                      }
+                    />
+                  ))}
+                </div>
+              )}
+            </section>
+
+            <section aria-labelledby="new-heading">
+              <div className="mb-3">
+                <p className="eyebrow">Recently added</p>
+                <h2 id="new-heading" className="text-2xl">New</h2>
+                <p className="mt-1 text-sm text-muted">Fresh questions entering the shared bank.</p>
+              </div>
+              {rails.recent.length === 0 ? (
+                <EmptyState>No questions yet.</EmptyState>
+              ) : (
+                <div className="border-b border-line">
+                  {rails.recent.slice(0, 5).map((question) => (
+                    <QuestionListItem
+                      key={question.id}
+                      id={question.id}
+                      question={question.canonicalText}
+                      compact
+                    />
+                  ))}
+                </div>
+              )}
+            </section>
+          </div>
+
+          <section className="border-t border-line pt-8" aria-labelledby="map-heading">
+            <div className="flex flex-wrap items-start justify-between gap-4">
+              <div className="max-w-2xl">
+                <p className="eyebrow">Another way in</p>
+                <h2 id="map-heading" className="text-2xl">See how questions connect</h2>
+                <p className="mt-1 text-sm leading-relaxed text-muted">
+                  The map shows themes and question relationships. It is an exploration view, not the main way you need to use the bank.
+                </p>
+              </div>
+              <Button variant="ghost" onClick={() => setShowMap((open) => !open)} aria-expanded={showMap}>
+                {showMap ? 'Hide question map' : 'Open question map'}
+              </Button>
             </div>
-          </Rail>
 
-          <Rail title="Most recent">
-            {rails.recent.length === 0 ? <EmptyState>No questions yet.</EmptyState> : (
-              <ul className="space-y-3 list-none p-0">
-                {rails.recent.map((r) => (
-                  <li key={r.id}>
-                    <QuestionCard r={r} sim={similar[r.id]} onToggleSimilar={toggleSimilar} />
-                  </li>
-                ))}
-              </ul>
-            )}
-          </Rail>
-
-          <Rail title="Top of recent campaigns">
-            {rails.topOfCampaigns.length === 0 ? <EmptyState>No published campaigns yet.</EmptyState> : (
-              <ul className="space-y-3 list-none p-0">
-                {rails.topOfCampaigns.map((r) => (
-                  <li key={`${r.campaignId}-${r.id}`}>
-                    <Card className="space-y-1">
-                      <Link href={`/questions/${r.id}`} className="break-words text-ink no-underline hover:underline">{r.canonicalText}</Link>
-                      <p className="text-sm text-muted">
-                        <Link href={`/campaigns/${r.campaignId}`} className="text-moss no-underline hover:underline">{r.campaignPrompt}</Link>
-                        {' · '}{r.comparisonAxis}{' · closed '}{new Date(r.closesAt).toLocaleDateString()}
-                      </p>
-                    </Card>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </Rail>
-
-          <Rail title="Most asked about">
-            {rails.mostAsked.length === 0 ? <EmptyState>No clusters yet.</EmptyState> : (
-              <ul className="space-y-3 list-none p-0">
-                {rails.mostAsked.map((r) => (
-                  <li key={r.id}>
-                    <Card className="space-y-1">
-                      <Link href={`/questions/${r.id}`} className="break-words text-ink no-underline hover:underline">{r.canonicalText}</Link>
-                      <Stamp>asked by {r.clusterSize}</Stamp>
-                    </Card>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </Rail>
-
-          {graph && graph.nodes.length > 0 && (
-            <Rail title="Question map">
-              <QuestionGraph nodes={graph.nodes} edges={graph.edges} />
-            </Rail>
-          )}
+            {showMap ? (
+              <div className="mt-6">
+                {graphLoading ? (
+                  <p className="text-muted">Loading the map…</p>
+                ) : graph && graph.nodes.length > 0 ? (
+                  <QuestionGraph nodes={graph.nodes} edges={graph.edges} />
+                ) : (
+                  <EmptyState>There are not enough connected questions to map yet.</EmptyState>
+                )}
+              </div>
+            ) : null}
+          </section>
         </div>
       )}
-    </PageShell>
+    </AppShell>
   )
 }
