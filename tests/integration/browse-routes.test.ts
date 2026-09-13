@@ -27,14 +27,23 @@ afterAll(async () => {
 })
 
 describe('GET /api/browse', () => {
-  it('returns the four-rail shape with no leakage', async () => {
+  it('returns participant-facing discovery signals with no leakage', async () => {
     const res = await GET()
     expect(res.status).toBe(200)
     const body = await res.json()
-    expect(Object.keys(body).sort()).toEqual(['mostAsked', 'recent', 'themes', 'topOfCampaigns'])
+    expect(Object.keys(body).sort()).toEqual([
+      'mostAsked',
+      'needsInput',
+      'recent',
+      'rising',
+      'themes',
+      'topOfCampaigns',
+    ])
     expect(body.recent[0].canonicalText).toBe('a canonical q')
     expect(body.recent[0]).not.toHaveProperty('submitterRef')
     expect(body.recent[0]).not.toHaveProperty('embedding')
+    expect(body.rising).toEqual([])
+    expect(body.needsInput).toEqual([])
     expect(body.themes).toHaveLength(THEMES.length) // no Unsorted bucket here
   })
 })
