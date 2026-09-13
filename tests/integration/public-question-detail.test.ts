@@ -11,6 +11,7 @@ import {
   refinement,
   score,
 } from '@/db/schema'
+import { addQuestions, createCampaign, openComparison } from '@/lib/campaign'
 import { getPublicQuestion } from '@/lib/discovery'
 import { NotFoundError } from '@/lib/errors'
 import { ensureDefaultWorkspace, DEFAULT_WORKSPACE_ID } from '@/lib/workspace'
@@ -23,7 +24,7 @@ function pad(vec: number[]): number[] {
 
 async function q(
   text: string,
-  state: 'submitted' | 'canonical' | 'ranked' = 'canonical',
+  state: 'submitted' | 'canonical' | 'under_comparison' | 'ranked' = 'canonical',
 ): Promise<string> {
   const [row] = await db
     .insert(question)
@@ -67,7 +68,6 @@ describe('getPublicQuestion', () => {
     const target = await q('the target question', 'ranked')
     const sibling = await q('a cluster sibling', 'canonical')
 
-    // Cluster the two together.
     const [cl] = await db
       .insert(cluster)
       .values({ datasetVersionId: versionId, representativeQuestionId: target, thresholdUsed: 0.2 })
@@ -75,14 +75,12 @@ describe('getPublicQuestion', () => {
     await db.update(question).set({ clusterId: cl.id }).where(eq(question.id, target))
     await db.update(question).set({ clusterId: cl.id }).where(eq(question.id, sibling))
 
-    // A closed campaign the target belongs to.
     const [c] = await db
       .insert(campaign)
       .values({ prompt: 'closed campaign', comparisonAxis: 'importance', state: 'closed' })
       .returning()
     await db.insert(campaignQuestion).values({ campaignId: c.id, questionId: target })
 
-    // A refinement with criteria — actor must NOT surface.
     await db.insert(refinement).values({
       questionId: target,
       before: 'old',
@@ -93,7 +91,6 @@ describe('getPublicQuestion', () => {
       actorRef: 'admin-secret',
     })
 
-    // Two variants merged into the target — the community demand signal.
     await db.insert(question).values([
       {
         rawText: 'variant 1', canonicalText: 'variant 1', embedding: pad([1, 0, 0]),
@@ -119,9 +116,26 @@ describe('getPublicQuestion', () => {
     expect(detail.refinement.count).toBe(1)
     expect(detail.refinement.criteria.sort()).toEqual(['scoped', 'specific'])
     expect(detail.variantCount).toBe(2)
-    // Anonymity: nothing in the payload exposes actor or submitter identity.
     expect(JSON.stringify(detail)).not.toContain('admin-secret')
     expect(JSON.stringify(detail)).not.toContain('secret-token')
+  })
+
+  it('keeps a question public while its public enquiry is comparing', async () => {
+    const a = await q('How should local transport improve?')
+    const b = await q('What would make walking easier?')
+    const c = await createCampaign({ prompt: 'What should this place focus on?', comparisonAxis: 'importance' })
+    await addQuestions(c.id, [a, b])
+    await openComparison(c.id)
+
+    const detail = await getPublicQuestion(a)
+    expect(detail.state).toBe('under_comparison')
+    expect(detail.campaigns).toContainEqual({ id: c.id, prompt: c.prompt, state: 'comparing' })
+    expect(JSON.stringify(detail)).not.toContain('secret-token')
+  })
+
+  it('does not expose a stray under-comparison record without a public comparing enquiry', async () => {
+    const hidden = await q('hidden in-flight question', 'under_comparison')
+    await expect(getPublicQuestion(hidden)).rejects.toBeInstanceOf(NotFoundError)
   })
 
   it('404s (NotFoundError) for a non-published question', async () => {
