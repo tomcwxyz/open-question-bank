@@ -1,6 +1,6 @@
 'use client'
 
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import Link from 'next/link'
 import { AdminShell } from '@/components/ui/AdminShell'
 import { Button, buttonClasses } from '@/components/ui/Button'
@@ -16,8 +16,6 @@ interface CampaignRow {
   state: string
 }
 
-// Curated presets for the judge-facing "Which is more ___?" comparison. The DB column stays
-// free-text (comparisonAxis), so "Other" falls back to a custom value rather than being enforced.
 const AXIS_PRESETS = [
   { value: 'important', label: 'Importance', description: 'Which question matters most to address?' },
   {
@@ -28,6 +26,22 @@ const AXIS_PRESETS = [
   { value: 'urgent', label: 'Urgency', description: 'Which question needs answering soonest?' },
 ] as const
 const CUSTOM_AXIS = '__custom__'
+
+function lifecycle(state: string) {
+  if (state === 'draft') {
+    return { label: 'Preparing', explanation: 'Choose the questions and decide how participation should open.', action: 'Set up enquiry →' }
+  }
+  if (state === 'open') {
+    return { label: 'Gathering questions', explanation: 'People can contribute questions to this enquiry now.', action: 'Manage gathering →' }
+  }
+  if (state === 'comparing') {
+    return { label: 'Prioritising', explanation: 'People are comparing questions to clarify what matters most.', action: 'Manage prioritisation →' }
+  }
+  if (state === 'closed') {
+    return { label: 'Complete', explanation: 'The prioritised result is published and can be synthesised.', action: 'Review result →' }
+  }
+  return { label: state, explanation: 'This enquiry is in an operational state.', action: 'Open enquiry →' }
+}
 
 export default function CampaignsPage() {
   const [campaigns, setCampaigns] = useState<CampaignRow[]>([])
@@ -65,9 +79,10 @@ export default function CampaignsPage() {
         setPrompt('')
         setAxisChoice(AXIS_PRESETS[0].value)
         setCustomAxis('')
+        setMessage('Enquiry created. It is private until you choose how to open participation.')
         await load()
       } else {
-        setMessage(data.error ?? 'Error')
+        setMessage(data.error ?? 'Could not create the enquiry.')
       }
     } catch {
       setMessage('Network error — please try again.')
@@ -76,39 +91,74 @@ export default function CampaignsPage() {
     }
   }
 
+  const active = useMemo(() => campaigns.filter((c) => c.state !== 'closed'), [campaigns])
+  const completed = useMemo(() => campaigns.filter((c) => c.state === 'closed'), [campaigns])
+
+  function enquiryRow(c: CampaignRow) {
+    const stage = lifecycle(c.state)
+    return (
+      <li key={c.id} className="grid gap-3 py-5 md:grid-cols-[minmax(0,1fr)_13rem_auto] md:items-center md:gap-6">
+        <div className="min-w-0">
+          <Link
+            href={`/admin/campaigns/${c.id}`}
+            className="font-display text-xl leading-snug text-ink no-underline hover:text-moss hover:no-underline"
+          >
+            {c.prompt}
+          </Link>
+          <p className="mt-1 text-sm text-muted">People compare by {c.comparisonAxis}.</p>
+        </div>
+        <div>
+          <p className="text-sm font-medium text-ink">{stage.label}</p>
+          <p className="mt-1 text-sm leading-relaxed text-muted">{stage.explanation}</p>
+        </div>
+        <Link
+          href={`/admin/campaigns/${c.id}`}
+          className={buttonClasses(c.state === 'closed' ? 'quiet' : 'ghost', 'shrink-0 justify-self-start md:justify-self-end')}
+        >
+          {stage.action}
+        </Link>
+      </li>
+    )
+  }
+
   return (
     <AdminShell>
-      <div className="space-y-1">
-        <p className="eyebrow">Prioritise</p>
-        <h1 className="text-3xl">Campaigns</h1>
-        <p className="text-muted">Group ready questions into a set the public can compare and rank.</p>
+      <div className="space-y-2">
+        <p className="eyebrow">Enquiries</p>
+        <h1 className="text-3xl sm:text-4xl">Run collective enquiry</h1>
+        <p className="max-w-2xl text-muted leading-relaxed">
+          Start with something you want to understand, gather the questions people think matter,
+          then invite them to help prioritise what should be answered first.
+        </p>
       </div>
 
       {message && (
-        <Notice role="alert" tone="error">
+        <Notice role="status" tone="info">
           {message}
         </Notice>
       )}
 
-      <Card>
-        <form onSubmit={create} className="space-y-3">
+      <Card className="space-y-5">
+        <div>
+          <p className="eyebrow">New enquiry</p>
+          <h2 className="mt-1 text-2xl">What are we trying to understand?</h2>
+        </div>
+        <form onSubmit={create} className="grid gap-5 lg:grid-cols-[minmax(0,1.35fr)_minmax(18rem,0.65fr)]">
           <div className="space-y-1.5">
-            <Label htmlFor="prompt">Prompt</Label>
+            <Label htmlFor="prompt">Enquiry question or prompt</Label>
             <Input
               id="prompt"
               value={prompt}
               onChange={(e) => setPrompt(e.target.value)}
-              placeholder="Most important questions about…"
+              placeholder="What do we most need to understand about…?"
               required
             />
+            <p className="text-sm text-muted">This is the public frame people will contribute questions into.</p>
           </div>
+
           <div className="space-y-1.5">
-            <Label htmlFor="axis">Comparison axis</Label>
-            <Select
-              id="axis"
-              value={axisChoice}
-              onChange={(e) => setAxisChoice(e.target.value)}
-            >
+            <Label htmlFor="axis">How should people compare questions?</Label>
+            <Select id="axis" value={axisChoice} onChange={(e) => setAxisChoice(e.target.value)}>
               {AXIS_PRESETS.map((p) => (
                 <option key={p.value} value={p.value}>
                   {p.label}
@@ -127,37 +177,43 @@ export default function CampaignsPage() {
             ) : (
               selectedPreset && <p className="text-sm text-muted">{selectedPreset.description}</p>
             )}
-            {axis && <p className="text-sm text-muted">Judges will see: &ldquo;Which is more {axis}?&rdquo;</p>}
           </div>
-          <Button type="submit" disabled={busy || !axis}>
-            Create campaign
-          </Button>
+
+          <div className="lg:col-span-2">
+            <Button type="submit" variant="accent" disabled={busy || !axis || !prompt.trim()}>
+              Create enquiry
+            </Button>
+          </div>
         </form>
       </Card>
 
-      {campaigns.length === 0 ? (
-        <EmptyState>No campaigns yet — create one above.</EmptyState>
-      ) : (
-        <ul className="space-y-3 list-none p-0">
-          {campaigns.map((c) => (
-            <li key={c.id}>
-              <Card className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-                <div className="min-w-0">
-                  <div className="break-words text-ink">{c.prompt}</div>
-                  <div className="text-sm text-muted">
-                    {c.comparisonAxis} · {c.state}
-                  </div>
-                </div>
-                <Link
-                  href={`/admin/campaigns/${c.id}`}
-                  className={buttonClasses('ghost', 'shrink-0 self-start sm:self-auto')}
-                >
-                  Open
-                </Link>
-              </Card>
-            </li>
-          ))}
-        </ul>
+      <section className="space-y-4">
+        <div className="flex items-end justify-between gap-4">
+          <div>
+            <p className="eyebrow">In progress</p>
+            <h2 className="mt-1 text-2xl">Active enquiries</h2>
+          </div>
+          <p className="text-sm text-muted">{active.length} active</p>
+        </div>
+
+        {active.length === 0 ? (
+          <EmptyState>No active enquiries. Create one above when there is something worth exploring together.</EmptyState>
+        ) : (
+          <ul className="divide-y divide-line border-y border-line list-none p-0">{active.map(enquiryRow)}</ul>
+        )}
+      </section>
+
+      {completed.length > 0 && (
+        <section className="space-y-4">
+          <div className="flex items-end justify-between gap-4">
+            <div>
+              <p className="eyebrow">Learn from what happened</p>
+              <h2 className="mt-1 text-2xl">Completed enquiries</h2>
+            </div>
+            <p className="text-sm text-muted">{completed.length} complete</p>
+          </div>
+          <ul className="divide-y divide-line border-y border-line list-none p-0">{completed.map(enquiryRow)}</ul>
+        </section>
       )}
     </AdminShell>
   )
