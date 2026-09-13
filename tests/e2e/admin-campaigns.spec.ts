@@ -38,15 +38,13 @@ test('admin runs an enquiry from preparation into prioritisation', async ({ page
   await expect(page.getByRole('heading', { name: campaignPrompt })).toBeVisible()
   await expect(page.getByText('Preparing', { exact: true })).toBeVisible()
 
-  // Add both published questions from the collapsed bank picker.
-  await page.getByText(/Add questions from the bank/).click()
+  await page.getByText(/Add questions from the live bank/).click()
   await page.locator('li', { hasText: textA }).getByRole('button', { name: 'Add to enquiry' }).click()
   await page.locator('li', { hasText: textB }).getByRole('button', { name: 'Add to enquiry' }).click()
 
   await page.getByRole('button', { name: 'Start prioritisation' }).click()
   await expect(page.getByText('Prioritising', { exact: true })).toBeVisible()
 
-  // Preview one pair and contribute a comparison; an emerging ranking appears.
   await page.getByText('Preview the comparison experience').click()
   await page.getByRole('button', { name: 'Preview next pair' }).click()
   await page.getByRole('button', { name: new RegExp(`e2e campaign [AB] ${stamp}`) }).first().click()
