@@ -1,12 +1,11 @@
 'use client'
 
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { AdminShell } from '@/components/ui/AdminShell'
 import { Button } from '@/components/ui/Button'
 import { Card } from '@/components/ui/Card'
 import { Label, Textarea } from '@/components/ui/Field'
 import { Notice } from '@/components/ui/Notice'
-import { Stamp } from '@/components/ui/Stamp'
 import { EmptyState } from '@/components/ui/EmptyState'
 
 interface Clustered {
@@ -63,7 +62,7 @@ export default function RefinementPage() {
 
   async function suggest(id: string) {
     setBusy(true)
-    setMessage('Asking the model…')
+    setMessage('Getting a second opinion…')
     try {
       const res = await fetch(`/api/admin/questions/${id}/refine/suggest`, { method: 'POST' })
       const data = await res.json()
@@ -71,9 +70,9 @@ export default function RefinementPage() {
         setActive({ id, before: data.before, suggestion: data.suggestion })
         setEditedText(data.suggestion.suggestedText)
         setMessage('')
-        loadHistory(id)
+        await loadHistory(id)
       } else {
-        setMessage(data.error ?? 'Error')
+        setMessage(data.error ?? 'Could not suggest an alternative wording.')
       }
     } catch {
       setMessage('Network error — please try again.')
@@ -82,9 +81,19 @@ export default function RefinementPage() {
     }
   }
 
-  async function decide(action: 'accept' | 'reject' | 'edit') {
+  async function saveWording() {
     if (!active) return
+    const trimmed = editedText.trim()
+    if (!trimmed) {
+      setMessage('The final wording cannot be empty.')
+      return
+    }
+
+    const action: 'accept' | 'edit' =
+      trimmed === active.suggestion.suggestedText.trim() ? 'accept' : 'edit'
+
     setBusy(true)
+    setMessage('')
     try {
       const res = await fetch(`/api/admin/questions/${active.id}/refine`, {
         method: 'POST',
@@ -93,7 +102,7 @@ export default function RefinementPage() {
           action,
           before: active.before,
           llmSuggestedText: active.suggestion.suggestedText,
-          finalText: action === 'reject' ? null : editedText,
+          finalText: trimmed,
           criteriaApplied: active.suggestion.criteriaApplied,
           critique: active.suggestion.critique,
           rationale: active.suggestion.rationale,
@@ -102,7 +111,7 @@ export default function RefinementPage() {
         }),
       })
       const data = await res.json()
-      setMessage(res.ok ? `Recorded: ${action}.` : (data.error ?? 'Error'))
+      setMessage(res.ok ? 'Wording saved.' : (data.error ?? 'Could not save the wording.'))
       if (res.ok) setActive(null)
     } catch {
       setMessage('Network error — please try again.')
@@ -112,14 +121,50 @@ export default function RefinementPage() {
     }
   }
 
+  async function keepOriginal() {
+    if (!active) return
+    setBusy(true)
+    setMessage('')
+    try {
+      const res = await fetch(`/api/admin/questions/${active.id}/refine`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: 'reject',
+          before: active.before,
+          llmSuggestedText: active.suggestion.suggestedText,
+          finalText: null,
+          criteriaApplied: active.suggestion.criteriaApplied,
+          critique: active.suggestion.critique,
+          rationale: active.suggestion.rationale,
+          model: active.suggestion.model,
+          modelVersion: active.suggestion.modelVersion,
+        }),
+      })
+      const data = await res.json()
+      setMessage(res.ok ? 'Original wording kept.' : (data.error ?? 'Could not record the decision.'))
+      if (res.ok) setActive(null)
+    } catch {
+      setMessage('Network error — please try again.')
+    } finally {
+      setBusy(false)
+      load()
+    }
+  }
+
+  const changed = useMemo(() => {
+    if (!active) return false
+    return editedText.trim() !== active.suggestion.suggestedText.trim()
+  }, [active, editedText])
+
   return (
     <AdminShell>
-      <div className="space-y-1">
-        <p className="eyebrow">Refine</p>
-        <h1 className="text-3xl">Refinement</h1>
-        <p className="text-muted">
-          Optional AI suggestions to improve a question&apos;s wording — use any time before it&apos;s
-          marked ready.
+      <div className="space-y-2">
+        <p className="eyebrow">Improve questions</p>
+        <h1 className="text-3xl sm:text-4xl">Make the wording clearer</h1>
+        <p className="max-w-2xl text-muted leading-relaxed">
+          These questions have passed the first review. Use AI as a second pair of eyes if it is useful,
+          then decide the wording yourself. Nothing is changed automatically.
         </p>
       </div>
 
@@ -130,70 +175,81 @@ export default function RefinementPage() {
       )}
 
       {active ? (
-        <section className="space-y-5">
-          <Card className="space-y-1">
-            <p className="eyebrow">Before</p>
-            <p className="text-ink">{active.before}</p>
-          </Card>
-
-          <div className="space-y-1.5">
-            <Label htmlFor="refined">Suggested (editable):</Label>
-            <Textarea
-              id="refined"
-              className="min-h-24"
-              value={editedText}
-              onChange={(e) => setEditedText(e.target.value)}
-            />
+        <section className="space-y-6">
+          <div className="flex items-start justify-between gap-4">
+            <div>
+              <p className="eyebrow">Question under review</p>
+              <p className="mt-1 max-w-3xl font-display text-2xl leading-snug text-ink">{active.before}</p>
+            </div>
+            <Button type="button" variant="quiet" onClick={() => setActive(null)} disabled={busy}>
+              Back to queue
+            </Button>
           </div>
 
-          <Card className="space-y-3">
-            <p className="text-ink">
-              <span className="font-medium">Rationale:</span> {active.suggestion.rationale}
-            </p>
-            <ul className="space-y-1.5 list-none p-0 text-sm">
-              {active.suggestion.critique.map((c) => (
-                <li key={c.criterion} className="flex gap-2">
-                  <span
-                    className={`font-mono text-xs uppercase tracking-wide ${
-                      c.verdict === 'pass' ? 'text-moss' : 'text-clay'
-                    }`}
-                  >
-                    {c.verdict}
-                  </span>
-                  <span className="text-ink">
-                    {c.criterion} — {c.note}
-                  </span>
-                </li>
-              ))}
-            </ul>
-          </Card>
+          <div className="grid gap-5 xl:grid-cols-[minmax(0,1.15fr)_minmax(18rem,0.85fr)]">
+            <div className="space-y-2">
+              <Label htmlFor="refined">Final wording</Label>
+              <Textarea
+                id="refined"
+                aria-label="Final wording"
+                className="min-h-40 text-lg leading-relaxed"
+                value={editedText}
+                onChange={(e) => setEditedText(e.target.value)}
+              />
+              <p className="text-sm text-muted">
+                {changed ? 'You have edited the suggested wording.' : 'This starts with the suggested wording. Edit it freely.'}
+              </p>
+            </div>
 
-          <div className="flex flex-wrap gap-2">
-            <Button type="button" variant="accent" onClick={() => decide('accept')} disabled={busy}>
-              Accept
+            <Card className="space-y-4 bg-surface">
+              <div>
+                <p className="eyebrow">AI second opinion</p>
+                <p className="mt-1 text-sm leading-relaxed text-muted">{active.suggestion.rationale}</p>
+              </div>
+
+              <div className="space-y-2">
+                {active.suggestion.critique.map((c) => (
+                  <div key={c.criterion} className="border-t border-line pt-2 first:border-t-0 first:pt-0">
+                    <div className="flex items-center justify-between gap-3">
+                      <span className="text-sm font-medium text-ink">{c.criterion}</span>
+                      <span className={c.verdict === 'pass' ? 'text-xs text-moss' : 'text-xs text-clay'}>
+                        {c.verdict === 'pass' ? 'Looks good' : 'Worth checking'}
+                      </span>
+                    </div>
+                    <p className="mt-1 text-sm leading-relaxed text-muted">{c.note}</p>
+                  </div>
+                ))}
+              </div>
+
+              <details className="text-sm">
+                <summary className="cursor-pointer text-muted hover:text-ink">Technical provenance</summary>
+                <p className="mt-2 break-words text-muted">
+                  {active.suggestion.model} · {active.suggestion.modelVersion}
+                </p>
+              </details>
+            </Card>
+          </div>
+
+          <div className="flex flex-wrap gap-2 border-t border-line pt-5">
+            <Button type="button" variant="accent" onClick={saveWording} disabled={busy || editedText.trim().length === 0}>
+              Save this wording
             </Button>
-            <Button type="button" onClick={() => decide('edit')} disabled={busy}>
-              Save edit
-            </Button>
-            <Button type="button" variant="ghost" onClick={() => decide('reject')} disabled={busy}>
-              Reject
-            </Button>
-            <Button type="button" variant="quiet" onClick={() => setActive(null)} disabled={busy}>
-              Cancel
+            <Button type="button" variant="ghost" onClick={keepOriginal} disabled={busy}>
+              Keep the original
             </Button>
           </div>
 
           {history.length > 0 && (
             <details className="text-sm">
               <summary className="cursor-pointer text-muted hover:text-ink">
-                Refinement history ({history.length})
+                Previous wording decisions ({history.length})
               </summary>
-              <ul className="mt-2 space-y-1 list-none p-0">
+              <ul className="mt-3 divide-y divide-line border-y border-line list-none p-0">
                 {history.map((h) => (
-                  <li key={h.id}>
-                    <Stamp>
-                      [{h.action}] {h.before} → {h.after ?? '(rejected — unchanged)'}
-                    </Stamp>
+                  <li key={h.id} className="py-3">
+                    <p className="text-xs uppercase tracking-wide text-muted">{h.action}</p>
+                    <p className="mt-1 text-ink">{h.before}</p>
+                    {h.after && h.after !== h.before && <p className="mt-1 text-muted">→ {h.after}</p>}
                   </li>
                 ))}
               </ul>
@@ -201,25 +257,37 @@ export default function RefinementPage() {
           )}
         </section>
       ) : questions.length === 0 ? (
-        <EmptyState>No questions ready for wording suggestions yet.</EmptyState>
+        <EmptyState>No questions need wording attention right now.</EmptyState>
       ) : (
-        <ul className="space-y-3 list-none p-0">
-          {questions.map((q) => (
-            <li key={q.id}>
-              <Card className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-                <div className="min-w-0 break-words text-ink">{q.canonicalText}</div>
+        <section className="space-y-4">
+          <div className="flex items-end justify-between gap-4">
+            <div>
+              <p className="eyebrow">Available to review</p>
+              <h2 className="mt-1 text-2xl">{questions.length} question{questions.length === 1 ? '' : 's'}</h2>
+            </div>
+            <p className="hidden text-sm text-muted sm:block">AI advice is optional.</p>
+          </div>
+
+          <ul className="divide-y divide-line border-y border-line list-none p-0">
+            {questions.map((q) => (
+              <li key={q.id} className="flex flex-col gap-3 py-5 sm:flex-row sm:items-center sm:justify-between">
+                <div className="min-w-0">
+                  <p className="break-words font-display text-xl leading-snug text-ink">{q.canonicalText}</p>
+                  <p className="mt-1 text-sm text-muted">Submitted {new Date(q.createdAt).toLocaleDateString()}</p>
+                </div>
                 <Button
                   type="button"
+                  variant="ghost"
                   className="shrink-0 self-start sm:self-auto"
                   onClick={() => suggest(q.id)}
                   disabled={busy}
                 >
-                  Suggest better wording
+                  Review wording →
                 </Button>
-              </Card>
-            </li>
-          ))}
-        </ul>
+              </li>
+            ))}
+          </ul>
+        </section>
       )}
     </AdminShell>
   )
