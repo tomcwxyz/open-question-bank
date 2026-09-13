@@ -9,37 +9,22 @@ import { Notice } from '@/components/ui/Notice'
 import { EmptyState } from '@/components/ui/EmptyState'
 import { SynthesisPanel } from '@/components/ui/SynthesisPanel'
 
-interface Member {
-  id: string
-  canonicalText: string
-}
-interface ScoreRow {
-  questionId: string
-  mu: number
-  sigma: number
-  nComparisons: number
-}
+interface Member { id: string; canonicalText: string }
+interface Candidate extends Member { state?: 'canonical' | 'ranked' }
+interface ScoreRow { questionId: string; mu: number; sigma: number; nComparisons: number }
 interface CampaignDetail {
   campaign: { id: string; prompt: string; comparisonAxis: string; state: string }
   members: Member[]
   scores: ScoreRow[]
 }
-interface Pair {
-  a: Member
-  b: Member
-  servedReason: string
-}
-interface Candidate {
-  id: string
-  canonicalText: string
-}
+interface Pair { a: Member; b: Member; servedReason: string }
 
 function stageCopy(state: string) {
-  if (state === 'draft') return { label: 'Preparing', summary: 'Choose the starting questions and decide how you want people to take part.' }
-  if (state === 'open') return { label: 'Gathering questions', summary: 'The enquiry is public and people can add what they think should be explored.' }
-  if (state === 'comparing') return { label: 'Prioritising', summary: 'People are comparing questions two at a time to clarify what matters most.' }
-  if (state === 'closed') return { label: 'Complete', summary: 'The prioritised result is published. You can now interpret and synthesise what emerged.' }
-  return { label: state, summary: 'This enquiry is in an operational state.' }
+  if (state === 'draft') return ['Preparing', 'Choose the starting questions and decide how you want people to take part.'] as const
+  if (state === 'open') return ['Gathering questions', 'People can contribute questions to this enquiry now.'] as const
+  if (state === 'comparing') return ['Prioritising', 'People are comparing questions to clarify what matters most.'] as const
+  if (state === 'closed') return ['Complete', 'The prioritised result is published and ready to interpret.'] as const
+  return [state, 'This enquiry is in an operational state.'] as const
 }
 
 export default function CampaignDetailPage({ params }: { params: Promise<{ id: string }> }) {
@@ -57,7 +42,9 @@ export default function CampaignDetailPage({ params }: { params: Promise<{ id: s
   }, [id])
 
   const loadCandidates = useCallback(async () => {
-    const res = await fetch('/api/admin/questions?state=canonical')
+    // The live bank includes both first-time canonical questions and questions ranked
+    // in earlier enquiries. Both are deliberately reusable in future enquiries.
+    const res = await fetch('/api/admin/questions?state=bank')
     if (res.ok) setCandidates((await res.json()).questions)
   }, [])
 
@@ -67,22 +54,12 @@ export default function CampaignDetailPage({ params }: { params: Promise<{ id: s
     loadCandidates()
   }, [load, loadCandidates])
 
-  const state = detail?.campaign.state
-  const stage = stageCopy(state ?? '')
-  const memberIds = useMemo(() => new Set(detail?.members.map((m) => m.id)), [detail?.members])
-  const addable = candidates.filter((c) => !memberIds.has(c.id))
-  const textById = new Map(detail?.members.map((m) => [m.id, m.canonicalText]))
-
-  async function refreshPair() {
-    const res = await fetch(`/api/admin/campaigns/${id}/pair`)
-    const data = await res.json()
-    if (res.ok) {
-      setPair(data.pair)
-      setMessage(data.pair ? '' : 'There are no more informative pairs to compare right now.')
-    } else {
-      setMessage(data.error ?? 'Could not load a pair.')
-    }
-  }
+  const state = detail?.campaign.state ?? ''
+  const [stageLabel, stageSummary] = stageCopy(state)
+  const memberIds = useMemo(() => new Set(detail?.members.map((member) => member.id) ?? []), [detail?.members])
+  const addable = candidates.filter((candidate) => !memberIds.has(candidate.id))
+  const textById = new Map(detail?.members.map((member) => [member.id, member.canonicalText]) ?? [])
+  const ranked = detail?.scores.filter((row) => row.nComparisons > 0) ?? []
 
   async function add(questionId: string) {
     setBusy(true)
@@ -114,13 +91,18 @@ export default function CampaignDetailPage({ params }: { params: Promise<{ id: s
       const data = await res.json()
       if (!res.ok) {
         setMessage(data.error ?? 'Could not change the enquiry stage.')
-      } else {
-        setPair(null)
-        if (path === 'open-submission') setMessage('The enquiry is now gathering questions publicly.')
-        if (path === 'open') setMessage('Prioritisation is now open.')
-        if (path === 'close') setMessage('The result is now published.')
-        await load()
+        return
       }
+      setPair(null)
+      setMessage(
+        path === 'open-submission'
+          ? 'The enquiry is now gathering questions publicly.'
+          : path === 'open'
+            ? 'Prioritisation is now open.'
+            : 'The result is now published.',
+      )
+      await load()
+      await loadCandidates()
     } catch {
       setMessage('Network error — please try again.')
     } finally {
@@ -128,16 +110,15 @@ export default function CampaignDetailPage({ params }: { params: Promise<{ id: s
     }
   }
 
-  async function getPair() {
-    setBusy(true)
-    setMessage('')
-    try {
-      await refreshPair()
-    } catch {
-      setMessage('Network error — please try again.')
-    } finally {
-      setBusy(false)
+  async function refreshPair() {
+    const res = await fetch(`/api/admin/campaigns/${id}/pair`)
+    const data = await res.json()
+    if (!res.ok) {
+      setMessage(data.error ?? 'Could not load a pair.')
+      return
     }
+    setPair(data.pair)
+    if (!data.pair) setMessage('There are no more informative pairs to compare right now.')
   }
 
   async function judge(winnerQuestionId: string | null) {
@@ -171,35 +152,27 @@ export default function CampaignDetailPage({ params }: { params: Promise<{ id: s
   if (!detail) {
     return (
       <AdminShell>
-        {message ? (
-          <Notice role="alert" tone="error">{message}</Notice>
-        ) : (
-          <p className="text-muted">Loading enquiry…</p>
-        )}
+        {message ? <Notice role="alert" tone="error">{message}</Notice> : <p className="text-muted">Loading enquiry…</p>}
       </AdminShell>
     )
   }
 
-  const ranked = detail.scores.filter((score) => score.nComparisons > 0)
-
   return (
     <AdminShell>
-      <div className="space-y-5 border-b border-line pb-6">
-        <Link href="/admin/campaigns" className="text-sm text-muted no-underline hover:text-ink hover:underline">
-          ← All enquiries
-        </Link>
+      <header className="space-y-5 border-b border-line pb-6">
+        <Link href="/admin/campaigns" className="text-sm text-muted no-underline hover:text-ink hover:underline">← All enquiries</Link>
         <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_14rem] lg:items-end">
           <div>
-            <p className="eyebrow">{stage.label}</p>
+            <p className="eyebrow">{stageLabel}</p>
             <h1 className="mt-1 max-w-4xl text-3xl sm:text-4xl leading-tight">{detail.campaign.prompt}</h1>
-            <p className="mt-3 max-w-2xl text-muted leading-relaxed">{stage.summary}</p>
+            <p className="mt-3 max-w-2xl text-muted leading-relaxed">{stageSummary}</p>
           </div>
           <div className="text-sm text-muted lg:text-right">
             <p>People compare by</p>
             <p className="font-medium text-ink">{detail.campaign.comparisonAxis}</p>
           </div>
         </div>
-      </div>
+      </header>
 
       {message && <Notice role="status" tone="info">{message}</Notice>}
 
@@ -208,17 +181,11 @@ export default function CampaignDetailPage({ params }: { params: Promise<{ id: s
           <div>
             <p className="eyebrow">Choose how to begin</p>
             <h2 className="mt-1 text-2xl">How should people take part first?</h2>
-            <p className="mt-2 max-w-2xl text-sm leading-relaxed text-muted">
-              You can open the enquiry to collect more questions, or move straight to prioritisation once the starting set is strong enough.
-            </p>
+            <p className="mt-2 text-sm text-muted">Gather more questions publicly, or move straight to prioritisation once the starting set is strong enough.</p>
           </div>
           <div className="flex flex-wrap gap-2">
-            <Button type="button" variant="accent" onClick={() => transition('open-submission')} disabled={busy}>
-              Open to gather questions
-            </Button>
-            <Button type="button" variant="ghost" onClick={() => transition('open')} disabled={busy}>
-              Start prioritisation
-            </Button>
+            <Button type="button" variant="accent" onClick={() => transition('open-submission')} disabled={busy}>Open to gather questions</Button>
+            <Button type="button" variant="ghost" onClick={() => transition('open')} disabled={busy}>Start prioritisation</Button>
           </div>
         </Card>
       )}
@@ -228,17 +195,11 @@ export default function CampaignDetailPage({ params }: { params: Promise<{ id: s
           <div>
             <p className="eyebrow">Public participation is open</p>
             <h2 className="mt-1 text-2xl">Gathering questions</h2>
-            <p className="mt-2 text-sm leading-relaxed text-muted">
-              Share the public enquiry page while you are collecting what people think should be asked. When the set feels ready, move into prioritisation.
-            </p>
+            <p className="mt-2 text-sm text-muted">Share the public enquiry while collecting what people think should be asked.</p>
           </div>
           <div className="flex flex-wrap gap-2 lg:justify-end">
-            <Link href={`/campaigns/${detail.campaign.id}`} className={buttonClasses('ghost')}>
-              View public enquiry ↗
-            </Link>
-            <Button type="button" variant="accent" onClick={() => transition('open')} disabled={busy}>
-              Start prioritisation
-            </Button>
+            <Link href={`/campaigns/${id}`} className={buttonClasses('ghost')}>View public enquiry ↗</Link>
+            <Button type="button" variant="accent" onClick={() => transition('open')} disabled={busy}>Start prioritisation</Button>
           </div>
         </Card>
       )}
@@ -248,17 +209,11 @@ export default function CampaignDetailPage({ params }: { params: Promise<{ id: s
           <div>
             <p className="eyebrow">Public participation is open</p>
             <h2 className="mt-1 text-2xl">People are deciding what matters most</h2>
-            <p className="mt-2 text-sm leading-relaxed text-muted">
-              Keep prioritisation open while useful comparisons are still coming in. Closing publishes the current result.
-            </p>
+            <p className="mt-2 text-sm text-muted">Keep this open while useful comparisons are still arriving. Closing publishes the current result.</p>
           </div>
           <div className="flex flex-wrap gap-2 lg:justify-end">
-            <Link href={`/judge/${detail.campaign.id}`} className={buttonClasses('ghost')}>
-              View prioritisation ↗
-            </Link>
-            <Button type="button" variant="accent" onClick={() => transition('close')} disabled={busy}>
-              Close and publish result
-            </Button>
+            <Link href={`/judge/${id}`} className={buttonClasses('ghost')}>View prioritisation ↗</Link>
+            <Button type="button" variant="accent" onClick={() => transition('close')} disabled={busy}>Close and publish result</Button>
           </div>
         </Card>
       )}
@@ -268,40 +223,29 @@ export default function CampaignDetailPage({ params }: { params: Promise<{ id: s
           <div>
             <p className="eyebrow">Published result</p>
             <h2 className="mt-1 text-2xl">The collective picture is now public</h2>
-            <p className="mt-2 text-sm leading-relaxed text-muted">
-              The ordering remains traceable to the pairwise choices underneath it. You can now use synthesis to explore what the result might add up to.
-            </p>
+            <p className="mt-2 text-sm text-muted">The result remains traceable to the pairwise choices underneath it.</p>
           </div>
-          <Link href={`/campaigns/${detail.campaign.id}`} className={buttonClasses('ghost', 'justify-self-start lg:justify-self-end')}>
-            View public result ↗
-          </Link>
+          <Link href={`/campaigns/${id}`} className={buttonClasses('ghost', 'justify-self-start lg:justify-self-end')}>View public result ↗</Link>
         </Card>
       )}
 
       {(state === 'draft' || state === 'open') && (
         <section className="space-y-5">
           <div className="flex items-end justify-between gap-4">
-            <div>
-              <p className="eyebrow">Question set</p>
-              <h2 className="mt-1 text-2xl">Questions in this enquiry</h2>
-            </div>
+            <div><p className="eyebrow">Question set</p><h2 className="mt-1 text-2xl">Questions in this enquiry</h2></div>
             <p className="text-sm text-muted">{detail.members.length} selected</p>
           </div>
 
           {detail.members.length === 0 ? (
-            <EmptyState>No questions have been selected yet. Add at least two before prioritisation can begin.</EmptyState>
+            <EmptyState>No questions selected yet. Add at least two before prioritisation can begin.</EmptyState>
           ) : (
             <ol className="divide-y divide-line border-y border-line pl-7">
-              {detail.members.map((member) => (
-                <li key={member.id} className="py-3 pl-2 text-ink">{member.canonicalText}</li>
-              ))}
+              {detail.members.map((member) => <li key={member.id} className="py-3 pl-2 text-ink">{member.canonicalText}</li>)}
             </ol>
           )}
 
-          <details className="group">
-            <summary className="cursor-pointer text-sm font-medium text-moss hover:underline">
-              Add questions from the bank ({addable.length} available)
-            </summary>
+          <details>
+            <summary className="cursor-pointer text-sm font-medium text-moss hover:underline">Add questions from the live bank ({addable.length} available)</summary>
             <div className="mt-4">
               {addable.length === 0 ? (
                 <p className="text-sm text-muted">No more published questions are available to add.</p>
@@ -309,16 +253,11 @@ export default function CampaignDetailPage({ params }: { params: Promise<{ id: s
                 <ul className="divide-y divide-line border-y border-line list-none p-0">
                   {addable.map((candidate) => (
                     <li key={candidate.id} className="flex flex-col gap-3 py-4 sm:flex-row sm:items-center sm:justify-between">
-                      <p className="min-w-0 break-words text-ink">{candidate.canonicalText}</p>
-                      <Button
-                        type="button"
-                        variant="ghost"
-                        className="shrink-0 self-start sm:self-auto"
-                        onClick={() => add(candidate.id)}
-                        disabled={busy}
-                      >
-                        Add to enquiry
-                      </Button>
+                      <div className="min-w-0">
+                        <p className="break-words text-ink">{candidate.canonicalText}</p>
+                        {candidate.state === 'ranked' && <p className="mt-1 text-xs text-muted">Previously prioritised — reusable here</p>}
+                      </div>
+                      <Button type="button" variant="ghost" onClick={() => add(candidate.id)} disabled={busy}>Add to enquiry</Button>
                     </li>
                   ))}
                 </ul>
@@ -330,28 +269,16 @@ export default function CampaignDetailPage({ params }: { params: Promise<{ id: s
 
       {(state === 'comparing' || state === 'closed') && (
         <section className="space-y-4">
-          <div>
-            <p className="eyebrow">Emerging picture</p>
-            <h2 className="mt-1 text-2xl">{state === 'closed' ? 'What rose to the top' : 'Where the questions currently stand'}</h2>
-          </div>
-
+          <div><p className="eyebrow">Emerging picture</p><h2 className="mt-1 text-2xl">{state === 'closed' ? 'What rose to the top' : 'Where the questions currently stand'}</h2></div>
           {ranked.length === 0 ? (
             <EmptyState>No comparisons have been recorded yet.</EmptyState>
           ) : (
             <ol className="divide-y divide-line border-y border-line list-none p-0">
-              {ranked.map((score, index) => (
-                <li key={score.questionId} className="grid gap-2 py-4 sm:grid-cols-[3rem_minmax(0,1fr)_auto] sm:items-center sm:gap-4">
+              {ranked.map((row, index) => (
+                <li key={row.questionId} className="grid gap-2 py-4 sm:grid-cols-[3rem_minmax(0,1fr)_auto] sm:items-center sm:gap-4">
                   <span className="font-display text-xl text-moss">#{index + 1}</span>
-                  <div className="min-w-0">
-                    <p className="break-words text-ink">{textById.get(score.questionId) ?? score.questionId}</p>
-                    <p className="mt-1 text-sm text-muted">
-                      {score.nComparisons} head-to-head comparison{score.nComparisons === 1 ? '' : 's'}
-                    </p>
-                  </div>
-                  <details className="text-sm sm:text-right">
-                    <summary className="cursor-pointer text-muted hover:text-ink">Technical score</summary>
-                    <p className="mt-1 text-muted">μ {score.mu.toFixed(1)} · σ {score.sigma.toFixed(1)}</p>
-                  </details>
+                  <div><p className="text-ink">{textById.get(row.questionId) ?? row.questionId}</p><p className="mt-1 text-sm text-muted">{row.nComparisons} head-to-head comparison{row.nComparisons === 1 ? '' : 's'}</p></div>
+                  <details className="text-sm sm:text-right"><summary className="cursor-pointer text-muted">Technical score</summary><p className="mt-1 text-muted">μ {row.mu.toFixed(1)} · σ {row.sigma.toFixed(1)}</p></details>
                 </li>
               ))}
             </ol>
@@ -363,32 +290,18 @@ export default function CampaignDetailPage({ params }: { params: Promise<{ id: s
         <details className="rounded-lg border border-line p-4">
           <summary className="cursor-pointer font-medium text-ink">Preview the comparison experience</summary>
           <div className="mt-4 space-y-4">
-            <p className="text-sm text-muted">
-              Use this only to test or contribute a comparison yourself. Public participants use the prioritisation page above.
-            </p>
             {!pair ? (
-              <Button type="button" variant="ghost" onClick={getPair} disabled={busy}>
-                Preview next pair
-              </Button>
+              <Button type="button" variant="ghost" onClick={async () => { setBusy(true); await refreshPair(); setBusy(false) }} disabled={busy}>Preview next pair</Button>
             ) : (
               <Card className="space-y-4 bg-surface">
                 <p className="text-sm text-muted">Which question is more {detail.campaign.comparisonAxis}?</p>
                 <div className="grid gap-3 sm:grid-cols-2">
-                  <Button type="button" variant="ghost" onClick={() => judge(pair.a.id)} disabled={busy}>
-                    {pair.a.canonicalText}
-                  </Button>
-                  <Button type="button" variant="ghost" onClick={() => judge(pair.b.id)} disabled={busy}>
-                    {pair.b.canonicalText}
-                  </Button>
+                  <Button type="button" variant="ghost" onClick={() => judge(pair.a.id)} disabled={busy}>{pair.a.canonicalText}</Button>
+                  <Button type="button" variant="ghost" onClick={() => judge(pair.b.id)} disabled={busy}>{pair.b.canonicalText}</Button>
                 </div>
-                <div className="flex flex-wrap items-center justify-between gap-3">
-                  <Button type="button" variant="quiet" onClick={() => judge(null)} disabled={busy}>
-                    Can&rsquo;t decide
-                  </Button>
-                  <details className="text-xs text-muted">
-                    <summary className="cursor-pointer">Why this pair?</summary>
-                    <p className="mt-1">{pair.servedReason}</p>
-                  </details>
+                <div className="flex items-center justify-between gap-3">
+                  <Button type="button" variant="quiet" onClick={() => judge(null)} disabled={busy}>Can&rsquo;t decide</Button>
+                  <details className="text-xs text-muted"><summary className="cursor-pointer">Why this pair?</summary><p className="mt-1">{pair.servedReason}</p></details>
                 </div>
               </Card>
             )}
@@ -398,11 +311,8 @@ export default function CampaignDetailPage({ params }: { params: Promise<{ id: s
 
       {state === 'closed' && (
         <section className="space-y-3">
-          <div>
-            <p className="eyebrow">Interpretation</p>
-            <h2 className="mt-1 text-2xl">What might this add up to?</h2>
-          </div>
-          <SynthesisPanel campaignId={detail.campaign.id} />
+          <div><p className="eyebrow">Interpretation</p><h2 className="mt-1 text-2xl">What might this add up to?</h2></div>
+          <SynthesisPanel campaignId={id} />
         </section>
       )}
     </AdminShell>
