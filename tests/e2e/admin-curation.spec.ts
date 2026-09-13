@@ -38,9 +38,14 @@ test('admin quality-checks then publishes a question into the live bank', async 
   await expect(page.getByRole('status')).toContainText(/published to the question bank/i)
 
   // Publishing removes it from the decision queue but keeps it visible in the live bank.
-  const readySection = page.getByRole('heading', { name: 'Ready to publish' }).locator('..')
+  const readySection = page.locator('section').filter({
+    has: page.getByRole('heading', { name: 'Ready to publish' }),
+  })
   await expect(readySection).not.toContainText(unique)
-  const liveSection = page.getByRole('heading', { name: 'Live question bank' }).locator('..')
+
+  const liveSection = page.locator('section').filter({
+    has: page.getByRole('heading', { name: 'Live question bank' }),
+  })
   await expect(liveSection).toContainText(unique)
 
   // State really is canonical now; scores persist as provenance/advice.
