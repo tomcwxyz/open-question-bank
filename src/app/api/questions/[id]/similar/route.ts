@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server'
 import { findSimilarQuestions } from '@/lib/similar'
+import { getPublicQuestion } from '@/lib/discovery'
 import { mapPublicError } from '@/lib/api-errors'
 
 /**
@@ -12,6 +13,9 @@ export async function GET(request: Request, { params }: { params: Promise<{ id: 
   const limitParam = Number(new URL(request.url).searchParams.get('limit') ?? '10')
   const limit = Number.isFinite(limitParam) ? limitParam : 10
   try {
+    // Do not use question state alone as a visibility oracle: `getPublicQuestion` additionally
+    // proves an under-comparison source belongs to a public comparing enquiry.
+    await getPublicQuestion(id)
     return NextResponse.json({
       similar: await findSimilarQuestions(id, {
         limit,
