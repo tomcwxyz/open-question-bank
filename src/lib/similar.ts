@@ -15,8 +15,10 @@ export interface SimilarQuestion {
 
 export interface FindSimilarOptions {
   limit?: number
-  /** States BOTH the source and the results may have (defaults to the public set). */
+  /** States the RESULT questions may have (defaults to the public search set). */
   states?: QuestionState[]
+  /** States the SOURCE question may have (defaults to `states`). */
+  sourceStates?: QuestionState[]
   workspaceId?: string
 }
 
@@ -32,11 +34,13 @@ export async function findSimilarQuestions(
 ): Promise<SimilarQuestion[]> {
   const limit = Math.min(50, Math.max(1, Math.floor(options.limit ?? 10)))
   const states = options.states ?? PUBLIC_SEARCH_STATES
-  if (states.length === 0) return []
+  const sourceStates = options.sourceStates ?? states
+  if (states.length === 0 || sourceStates.length === 0) return []
   const workspaceId = options.workspaceId ?? (await getActiveWorkspaceId())
 
-  // Scope the SOURCE fetch to the workspace AND the allowed states, so the public endpoint can
-  // never pivot "find similar" off an unpublished or cross-workspace question's embedding.
+  // Scope the SOURCE fetch to the workspace AND explicitly permitted source states. Public callers
+  // can therefore use an `under_comparison` question as the pivot while still restricting results
+  // to the normal canonical/ranked bank.
   const [source] = await db
     .select({
       embedding: question.embedding,
@@ -49,15 +53,13 @@ export async function findSimilarQuestions(
       and(
         eq(question.id, questionId),
         eq(question.workspaceId, workspaceId),
-        inArray(question.state, states),
+        inArray(question.state, sourceStates),
       ),
     )
     .limit(1)
   if (!source) throw new NotFoundError(`Question not found: ${questionId}`)
-  // No vector to compare against (e.g. embedding never computed) → no neighbours rather than error.
   if (!source.embedding) return []
 
-  // Same dataset version ⇒ same workspace and same pinned model (reproducibility); no re-embed.
   const distance = cosineDistance(question.embedding, source.embedding)
   const rows = await db
     .select({
@@ -72,8 +74,6 @@ export async function findSimilarQuestions(
         eq(question.datasetVersionId, source.datasetVersionId),
         ne(question.id, questionId),
         inArray(question.state, states),
-        // Skip embeddingless rows: their cosine distance is NULL and would otherwise map to 0
-        // (a false "perfect match") when the result set is under the limit.
         isNotNull(question.embedding),
         lt(distance, source.similarityThreshold),
       ),
