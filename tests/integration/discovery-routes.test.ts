@@ -5,6 +5,7 @@ import { campaign, campaignQuestion, comparison, datasetVersion, question, score
 import { addQuestions, createCampaign, openComparison } from '@/lib/campaign'
 import { GET as campaignsGet } from '@/app/api/campaigns/route'
 import { GET as questionsGet, POST as questionsPost } from '@/app/api/questions/route'
+import { GET as adminQuestionsGet } from '@/app/api/admin/questions/route'
 
 let versionId: number
 const jsonReq = (body: unknown) =>
@@ -13,7 +14,7 @@ const jsonReq = (body: unknown) =>
 function pad(vec: number[]): number[] {
   return [...vec, ...Array(768 - vec.length).fill(0)]
 }
-async function q(text: string, state: 'submitted' | 'canonical'): Promise<string> {
+async function q(text: string, state: 'submitted' | 'canonical' | 'ranked'): Promise<string> {
   const [row] = await db
     .insert(question)
     .values({
@@ -68,12 +69,26 @@ describe('GET /api/campaigns', () => {
 describe('GET /api/questions (browse)', () => {
   it('200 with canonical/ranked questions only', async () => {
     await q('canon', 'canonical')
+    await q('ranked', 'ranked')
     await q('pending', 'submitted') // excluded
     const res = await questionsGet(new Request('http://localhost/api/questions'))
     expect(res.status).toBe(200)
     const { questions } = await res.json()
-    expect(questions).toHaveLength(1)
-    expect(questions[0].state).toBe('canonical')
+    expect(new Set(questions.map((row: { state: string }) => row.state))).toEqual(new Set(['canonical', 'ranked']))
+  })
+})
+
+describe('GET /api/admin/questions?state=bank', () => {
+  it('shows the actual live bank, including ranked questions but excluding pending work', async () => {
+    const canonical = await q('canon in bank', 'canonical')
+    const ranked = await q('ranked in bank', 'ranked')
+    await q('pending work', 'submitted')
+
+    const res = await adminQuestionsGet(new Request('http://localhost/api/admin/questions?state=bank'))
+    expect(res.status).toBe(200)
+    const { questions } = await res.json()
+    expect(new Set(questions.map((row: { id: string }) => row.id))).toEqual(new Set([canonical, ranked]))
+    expect(new Set(questions.map((row: { state: string }) => row.state))).toEqual(new Set(['canonical', 'ranked']))
   })
 })
 
