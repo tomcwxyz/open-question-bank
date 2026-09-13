@@ -122,9 +122,9 @@ export async function listPublicQuestions(
 export interface PublicQuestionDetail {
   id: string
   canonicalText: string
-  state: 'canonical' | 'ranked'
+  state: 'canonical' | 'under_comparison' | 'ranked'
   cluster: { id: string; representativeText: string | null; size: number } | null
-  campaigns: { id: string; prompt: string; state: 'comparing' | 'closed' }[]
+  campaigns: { id: string; prompt: string; state: 'open' | 'comparing' | 'closed' }[]
   /** Anonymised lineage summary — counts and criteria only, never actor identity. */
   refinement: { count: number; criteria: string[] }
   /** How many submissions were merged into this question — the community demand signal. */
@@ -132,10 +132,13 @@ export interface PublicQuestionDetail {
 }
 
 /**
- * Public detail for a single published question. Only canonical/ranked questions are visible;
- * the response is strictly anonymised (no submitter ref, no refinement actor) to protect the
- * unlinkability commitment, while still surfacing the transparency the project promises:
- * cluster, campaign membership, and the refinement lineage as counts + criteria.
+ * Public detail for a participant-visible question.
+ *
+ * Canonical/ranked questions are public bank records. `under_comparison` questions remain readable
+ * only while they belong to a genuinely public `comparing` campaign; this lets an open enquiry
+ * keep linking to its questions without widening access to draft/in-flight material.
+ *
+ * The response stays strictly anonymised: no submitter ref, embeddings or refinement actor.
  */
 export async function getPublicQuestion(
   id: string,
@@ -154,11 +157,27 @@ export async function getPublicQuestion(
       and(
         eq(question.id, id),
         eq(question.workspaceId, ws),
-        inArray(question.state, ['canonical', 'ranked']),
+        inArray(question.state, ['canonical', 'under_comparison', 'ranked']),
       ),
     )
     .limit(1)
   if (!q) throw new NotFoundError(`Question not found: ${id}`)
+
+  if (q.state === 'under_comparison') {
+    const [publicMembership] = await db
+      .select({ campaignId: campaign.id })
+      .from(campaignQuestion)
+      .innerJoin(campaign, eq(campaignQuestion.campaignId, campaign.id))
+      .where(
+        and(
+          eq(campaignQuestion.questionId, id),
+          eq(campaign.workspaceId, ws),
+          eq(campaign.state, 'comparing'),
+        ),
+      )
+      .limit(1)
+    if (!publicMembership) throw new NotFoundError(`Question not found: ${id}`)
+  }
 
   let clusterInfo: PublicQuestionDetail['cluster'] = null
   if (q.clusterId) {
@@ -176,7 +195,7 @@ export async function getPublicQuestion(
         and(
           eq(question.clusterId, q.clusterId),
           eq(question.workspaceId, ws),
-          inArray(question.state, ['canonical', 'ranked']),
+          inArray(question.state, ['canonical', 'under_comparison', 'ranked']),
         ),
       )
     clusterInfo = {
@@ -194,7 +213,7 @@ export async function getPublicQuestion(
       and(
         eq(campaignQuestion.questionId, id),
         eq(campaign.workspaceId, ws),
-        inArray(campaign.state, ['comparing', 'closed']),
+        inArray(campaign.state, ['open', 'comparing', 'closed']),
       ),
     )
     .orderBy(desc(campaign.createdAt))
@@ -210,12 +229,12 @@ export async function getPublicQuestion(
   return {
     id: q.id,
     canonicalText: q.canonicalText,
-    state: q.state as 'canonical' | 'ranked',
+    state: q.state as 'canonical' | 'under_comparison' | 'ranked',
     cluster: clusterInfo,
     campaigns: campaigns.map((cmp) => ({
       id: cmp.id,
       prompt: cmp.prompt,
-      state: cmp.state as 'comparing' | 'closed',
+      state: cmp.state as 'open' | 'comparing' | 'closed',
     })),
     refinement: { count: refs.length, criteria },
     variantCount,
