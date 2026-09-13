@@ -1,8 +1,9 @@
 import { test, expect } from '@playwright/test'
 
-// An anonymous visitor lands on /browse, sees curated rails by default, can search (rails ->
-// results -> back), and can drill into a theme. Builds its own data via the admin API.
-test('browse shows rails, search, and theme drill-in', async ({ page, browser }) => {
+// An anonymous visitor lands on /browse, sees the participant-facing Questions experience,
+// can search (questions -> results -> back), and can drill into a theme. Builds its own data
+// via the admin API.
+test('questions experience supports discovery, search, and theme filtering', async ({ page, browser }) => {
   const password = process.env.ADMIN_PASSWORD ?? 'admin'
   const stamp = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
 
@@ -24,24 +25,24 @@ test('browse shows rails, search, and theme drill-in', async ({ page, browser })
   const anon = await browser.newContext()
   const vp = await anon.newPage()
 
-  // Rails by default. Scope to the "Most recent" rail: with little data the same
-  // question can legitimately appear in more than one rail, so an unscoped getByText
-  // would trip strict mode.
   await vp.goto('/browse')
-  const recentRail = vp.locator('section').filter({
-    has: vp.getByRole('heading', { name: 'Most recent' }),
-  })
-  await expect(recentRail.getByText(text)).toBeVisible()
+  await expect(vp.getByRole('heading', { name: 'What are people trying to figure out?' })).toBeVisible()
 
-  // Search swaps rails -> results, then back.
-  await vp.getByLabel('Search').fill('cycle lanes')
+  const newSection = vp.locator('section').filter({
+    has: vp.getByRole('heading', { name: 'New' }),
+  })
+  await expect(newSection.getByText(text)).toBeVisible()
+
+  // Search swaps the discovery view for results, then returns cleanly.
+  await vp.getByLabel('Search questions').fill('cycle lanes')
   await vp.getByRole('button', { name: 'Search' }).click()
   await expect(vp.getByText(text)).toBeVisible()
-  await vp.getByRole('button', { name: /Back to browse/ }).click()
-  await expect(vp.getByRole('heading', { name: 'Most recent' })).toBeVisible()
+  await vp.getByRole('button', { name: /Back to questions/ }).click()
+  await expect(vp.getByRole('heading', { name: 'Rising' })).toBeVisible()
 
-  // Theme drill-in: the Transport chip shows at least one question.
-  await vp.getByRole('button', { name: /Transport & Streets/ }).click()
+  // Theme filtering stays available but is secondary to the main discovery experience.
+  await vp.getByRole('button', { name: 'Transport & Streets' }).click()
   await expect(vp.getByText(text)).toBeVisible()
+
   await anon.close()
 })
