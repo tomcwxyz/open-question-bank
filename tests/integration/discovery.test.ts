@@ -45,7 +45,6 @@ afterAll(async () => {
   await pool.end()
 })
 
-// Drives a campaign to `comparing` (opened) or `closed`.
 async function campaignTo(state: 'draft' | 'comparing' | 'closed'): Promise<string> {
   const a = await q('Question A', 'canonical')
   const b = await q('Question B', 'canonical')
@@ -63,7 +62,7 @@ describe('listPublicCampaigns', () => {
   it('groups closed → published and comparing → openForJudging, with member counts, excluding draft', async () => {
     const closedId = await campaignTo('closed')
     const comparingId = await campaignTo('comparing')
-    await campaignTo('draft') // must NOT appear
+    await campaignTo('draft')
 
     const { published, openForJudging } = await listPublicCampaigns()
     expect(published.map((c) => c.id)).toEqual([closedId])
@@ -81,12 +80,24 @@ describe('listPublicQuestions', () => {
     const ranked = await q('ranked one', 'ranked')
     await q('pending', 'submitted')
     await q('clustered', 'clustered')
-    await q('comparing', 'under_comparison')
+    await q('legacy comparing row', 'under_comparison')
 
     const rows = await listPublicQuestions()
     expect(new Set(rows.map((r) => r.id))).toEqual(new Set([canon, ranked]))
     expect(new Set(rows.map((r) => r.state))).toEqual(new Set(['canonical', 'ranked']))
     expect(rows[0]).not.toHaveProperty('submitterRef')
+  })
+
+  it('keeps published questions visible while an enquiry is comparing them', async () => {
+    const a = await q('active but still public A', 'canonical')
+    const b = await q('active but still public B', 'canonical')
+    const c = await createCampaign({ prompt: 'active enquiry', comparisonAxis: 'importance' })
+    await addQuestions(c.id, [a, b])
+    await openComparison(c.id)
+
+    const rows = await listPublicQuestions()
+    expect(new Set(rows.map((row) => row.id))).toEqual(new Set([a, b]))
+    expect(rows.every((row) => row.state === 'canonical')).toBe(true)
   })
 
   it('respects the limit', async () => {
