@@ -6,8 +6,6 @@ import { initialRating, initialRatingWithDemand } from '@/lib/trueskill'
 import { getActiveWorkspaceId } from '@/lib/workspace'
 import { getVariantCounts } from '@/lib/submission'
 
-// The transaction handle Drizzle hands to db.transaction() callbacks — lets
-// helpers run inside a transaction without casting away the db type.
 type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0]
 
 export async function createCampaign(input: {
@@ -32,7 +30,7 @@ export async function listCampaigns(workspaceId?: string): Promise<Campaign[]> {
     .orderBy(desc(campaign.createdAt))
 }
 
-/** Canonical questions available to add to a campaign. */
+/** Canonical questions available to older admin callers. */
 export async function listCanonical(limit = 100, workspaceId?: string) {
   const ws = workspaceId ?? (await getActiveWorkspaceId())
   return db
@@ -43,11 +41,6 @@ export async function listCanonical(limit = 100, workspaceId?: string) {
     .limit(limit)
 }
 
-/**
- * Fetch a campaign and validate it belongs to the given workspace.
- * Throws NotFoundError if the campaign doesn't exist OR belongs to a different workspace
- * (don't leak existence across workspace boundaries).
- */
 export async function requireCampaignInWorkspace(
   campaignId: string,
   workspaceId: string,
@@ -78,8 +71,7 @@ export async function getCampaign(campaignId: string, workspaceId?: string) {
   return { campaign: c, members, scores }
 }
 
-// Curation (add/remove canonical questions, open comparison) is allowed while a campaign is
-// `draft` OR `open` for submission — an admin collecting submissions can still build the set.
+// Curation is allowed while an enquiry is preparing or gathering questions.
 async function requireCurating(tx: Tx, campaignId: string): Promise<Campaign> {
   const [c] = await tx.select().from(campaign).where(eq(campaign.id, campaignId)).limit(1)
   if (!c) throw new NotFoundError(`Campaign not found: ${campaignId}`)
@@ -89,7 +81,6 @@ async function requireCurating(tx: Tx, campaignId: string): Promise<Campaign> {
   return c
 }
 
-/** Open a draft campaign for public submission (draft → open). */
 export async function openForSubmission(
   campaignId: string,
   workspaceId?: string,
@@ -114,10 +105,6 @@ export async function openForSubmission(
   })
 }
 
-/**
- * Validate that a campaign is accepting public submissions in the given workspace. Throws
- * NotFoundError (unknown / wrong workspace) or IneligibleError (not in the `open` state).
- */
 export async function assertCampaignOpenForSubmission(
   campaignId: string,
   workspaceId: string,
@@ -134,6 +121,10 @@ export async function assertCampaignOpenForSubmission(
   return c
 }
 
+/**
+ * Add published questions to an enquiry. Both canonical and previously ranked questions are
+ * reusable: prior participation should not make a question permanently unavailable.
+ */
 export async function addQuestions(campaignId: string, questionIds: string[]): Promise<void> {
   await db.transaction(async (tx) => {
     const c = await requireCurating(tx, campaignId)
@@ -146,11 +137,12 @@ export async function addQuestions(campaignId: string, questionIds: string[]): P
     for (const qid of questionIds) {
       const q = found.get(qid)
       if (!q) throw new NotFoundError(`Question not found: ${qid}`)
-      if (q.state !== 'canonical')
-        throw new IneligibleError(`Question ${qid} is not canonical (state=${q.state})`)
-      // Integrity: never let a question cross the workspace boundary into another's campaign.
-      if (q.workspaceId !== c.workspaceId)
+      if (q.state !== 'canonical' && q.state !== 'ranked') {
+        throw new IneligibleError(`Question ${qid} is not published and reusable (state=${q.state})`)
+      }
+      if (q.workspaceId !== c.workspaceId) {
         throw new IneligibleError(`Question ${qid} belongs to a different workspace`)
+      }
     }
     await tx
       .insert(campaignQuestion)
@@ -164,53 +156,68 @@ export async function removeQuestion(campaignId: string, questionId: string): Pr
     await requireCurating(tx, campaignId)
     await tx
       .delete(campaignQuestion)
-      .where(
-        and(eq(campaignQuestion.campaignId, campaignId), eq(campaignQuestion.questionId, questionId)),
-      )
+      .where(and(eq(campaignQuestion.campaignId, campaignId), eq(campaignQuestion.questionId, questionId)))
   })
 }
 
+/**
+ * Begin prioritisation without turning participation into a global question state.
+ *
+ * `question.state` describes the reusable public question record. Active comparison is instead
+ * represented by campaign membership + `campaign.state = comparing`. We lock member question rows
+ * before checking for conflicting active memberships, so two enquiries cannot open the same
+ * question concurrently even under competing transactions.
+ */
 export async function openComparison(campaignId: string): Promise<Campaign> {
-  // NOTE: default READ COMMITTED leaves a narrow TOCTOU window — two concurrent
-  // opens sharing a question could both read it as canonical. The under_comparison
-  // flip is idempotent so the damage is bounded; a SERIALIZABLE tx or FOR UPDATE on
-  // the question rows would close it. Acceptable for the single-admin tool (see spec
-  // §11 deferred follow-ups); revisit with multi-user judging in 5b+.
   return db.transaction(async (tx) => {
-    await requireCurating(tx, campaignId) // draft or open → comparing
+    await requireCurating(tx, campaignId)
     const members = await tx
       .select({ id: question.id, state: question.state })
       .from(campaignQuestion)
       .innerJoin(question, eq(campaignQuestion.questionId, question.id))
       .where(eq(campaignQuestion.campaignId, campaignId))
+      .for('update')
+
     if (members.length < 2) {
       throw new IneligibleError(`Campaign ${campaignId} needs at least 2 questions to open`)
     }
-    for (const m of members) {
-      // The 5a invariant: a question can be opened into only one comparing campaign at a time.
-      if (m.state !== 'canonical') {
-        throw new IneligibleError(`Question ${m.id} is not available (state=${m.state})`)
+    for (const member of members) {
+      if (member.state !== 'canonical' && member.state !== 'ranked') {
+        throw new IneligibleError(`Question ${member.id} is not available (state=${member.state})`)
       }
     }
-    // Community demand prior: questions that received more merged submissions
-    // start with a higher initial mu (logarithmic boost, sigma unchanged).
-    // Pairwise comparisons can still override this — it's a head start, not a floor.
-    const variantCounts = await getVariantCounts(members.map((m) => m.id), tx)
+
+    const activeElsewhere = await tx
+      .select({ questionId: campaignQuestion.questionId, campaignId: campaign.id })
+      .from(campaignQuestion)
+      .innerJoin(campaign, eq(campaignQuestion.campaignId, campaign.id))
+      .where(
+        and(
+          inArray(campaignQuestion.questionId, members.map((member) => member.id)),
+          eq(campaign.state, 'comparing'),
+        ),
+      )
+      .limit(1)
+
+    if (activeElsewhere.length > 0) {
+      throw new IneligibleError(
+        `Question ${activeElsewhere[0].questionId} is already being prioritised in another campaign`,
+      )
+    }
+
+    const variantCounts = await getVariantCounts(members.map((member) => member.id), tx)
     const init = initialRating()
     await tx
       .insert(score)
       .values(
-        members.map((m) => {
-          const vc = variantCounts.get(m.id) ?? 0
-          const rating = vc > 0 ? initialRatingWithDemand(vc) : init
-          return { campaignId, questionId: m.id, mu: rating.mu, sigma: rating.sigma }
+        members.map((member) => {
+          const variantCount = variantCounts.get(member.id) ?? 0
+          const rating = variantCount > 0 ? initialRatingWithDemand(variantCount) : init
+          return { campaignId, questionId: member.id, mu: rating.mu, sigma: rating.sigma }
         }),
       )
       .onConflictDoNothing()
-    await tx
-      .update(question)
-      .set({ state: 'under_comparison' })
-      .where(inArray(question.id, members.map((m) => m.id)))
+
     const [updated] = await tx
       .update(campaign)
       .set({ state: 'comparing', opensAt: new Date() })
@@ -231,17 +238,21 @@ export async function closeCampaign(campaignId: string): Promise<Campaign> {
       .select({ questionId: campaignQuestion.questionId })
       .from(campaignQuestion)
       .where(eq(campaignQuestion.campaignId, campaignId))
+
     if (members.length > 0) {
+      // Closing records that these published questions have now participated in a completed
+      // prioritisation. Legacy `under_comparison` rows are also normalised back to ranked here.
       await tx
         .update(question)
         .set({ state: 'ranked' })
         .where(
           and(
-            inArray(question.id, members.map((m) => m.questionId)),
-            eq(question.state, 'under_comparison'),
+            inArray(question.id, members.map((member) => member.questionId)),
+            inArray(question.state, ['canonical', 'ranked', 'under_comparison']),
           ),
         )
     }
+
     const [updated] = await tx
       .update(campaign)
       .set({ state: 'closed', closesAt: new Date() })
