@@ -70,9 +70,11 @@ export interface PublicCampaignInfo {
   prompt: string
   comparisonAxis: string
   state: 'open' | 'comparing' | 'closed'
+  closesAt: Date | null
+  questionCount: number
 }
 
-/** Public basic info for a single campaign in a public state (open/comparing/closed). */
+/** Public lifecycle context for a single enquiry in a participant-visible state. */
 export async function getPublicCampaign(
   id: string,
   workspaceId?: string,
@@ -84,8 +86,11 @@ export async function getPublicCampaign(
       prompt: campaign.prompt,
       comparisonAxis: campaign.comparisonAxis,
       state: campaign.state,
+      closesAt: campaign.closesAt,
+      questionCount: sql<number>`count(${campaignQuestion.questionId})::int`,
     })
     .from(campaign)
+    .leftJoin(campaignQuestion, eq(campaignQuestion.campaignId, campaign.id))
     .where(
       and(
         eq(campaign.id, id),
@@ -93,9 +98,17 @@ export async function getPublicCampaign(
         inArray(campaign.state, ['open', 'comparing', 'closed']),
       ),
     )
+    .groupBy(campaign.id)
     .limit(1)
   if (!c) throw new NotFoundError(`Campaign not found: ${id}`)
-  return { id: c.id, prompt: c.prompt, comparisonAxis: c.comparisonAxis, state: c.state as 'open' | 'comparing' | 'closed' }
+  return {
+    id: c.id,
+    prompt: c.prompt,
+    comparisonAxis: c.comparisonAxis,
+    state: c.state as 'open' | 'comparing' | 'closed',
+    closesAt: c.closesAt,
+    questionCount: Number(c.questionCount),
+  }
 }
 
 export interface PublicQuestion {
