@@ -85,7 +85,12 @@ export default function CampaignsIndexPage() {
                       className="grid gap-4 border-t border-line py-6 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center sm:gap-6"
                     >
                       <div className="min-w-0">
-                        <p className="font-display text-2xl leading-snug text-ink">{enquiry.prompt}</p>
+                        <Link
+                          href={`/campaigns/${enquiry.id}`}
+                          className="font-display text-2xl leading-snug text-ink no-underline transition-colors hover:text-moss hover:no-underline"
+                        >
+                          {enquiry.prompt}
+                        </Link>
                         <p className="mt-2 text-sm leading-relaxed text-muted">
                           {gathering
                             ? 'People are still adding the questions this enquiry should consider.'
