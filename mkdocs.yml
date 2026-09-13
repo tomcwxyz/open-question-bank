@@ -11,4 +11,7 @@ theme:
 nav:
   - Home: index.md
   - User Guide: user-guide.md
+  - UX v0.3 status: ux-v0.3-status.md
+  - Architecture:
+      - Question state vs enquiry activity: architecture-question-state-vs-enquiry-activity.md
   - Changelog: changelog.md
