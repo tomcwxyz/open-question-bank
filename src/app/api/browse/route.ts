@@ -2,11 +2,11 @@ import { NextResponse } from 'next/server'
 import {
   recentQuestions,
   topOfRecentCampaigns,
-  mostAskedQuestions,
   themeCounts,
   risingQuestions,
   needsInputQuestions,
 } from '@/lib/browse'
+import { repeatedQuestions } from '@/lib/question-demand'
 import { mapPublicError } from '@/lib/api-errors'
 
 export async function GET() {
@@ -14,7 +14,7 @@ export async function GET() {
     const [recent, topOfCampaigns, mostAsked, themes, rising, needsInput] = await Promise.all([
       recentQuestions(),
       topOfRecentCampaigns(),
-      mostAskedQuestions(),
+      repeatedQuestions(),
       themeCounts(),
       risingQuestions(),
       needsInputQuestions(),
