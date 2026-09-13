@@ -56,7 +56,9 @@ export function QuestionComposer({
 
     try {
       const payload = campaignId ? { ...body, campaignId } : { ...body }
-      if (precomputed && (body.decision || body.rawText)) {
+      // The cached embedding belongs to the exact wording that produced the candidate set.
+      // Reuse it only for the subsequent candidate decision, never for a fresh submission.
+      if (precomputed && body.decision) {
         Object.assign(payload, { precomputed })
       }
 
@@ -137,6 +139,13 @@ export function QuestionComposer({
     }
 
     setMessage(result.error ?? 'Something went wrong.')
+  }
+
+  function editQuestion() {
+    setCandidates([])
+    setPrecomputed(null)
+    setMessage('')
+    setPhase('writing')
   }
 
   function reset() {
@@ -238,7 +247,7 @@ export function QuestionComposer({
             <Button type="button" variant="accent" onClick={addAsNew} disabled={busy}>
               Mine is different — add it
             </Button>
-            <Button type="button" variant="quiet" onClick={() => setPhase('writing')} disabled={busy}>
+            <Button type="button" variant="quiet" onClick={editQuestion} disabled={busy}>
               ← Edit my question
             </Button>
           </div>
