@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server'
 import { listPending } from '@/lib/moderation'
 import { listClustered } from '@/lib/refinement'
 import { listCanonical } from '@/lib/campaign'
+import { listPublicQuestions } from '@/lib/discovery'
 import { getVariantCounts } from '@/lib/submission'
 
 export async function GET(request: Request) {
@@ -23,8 +24,18 @@ export async function GET(request: Request) {
       questions: questions.map((q) => ({ ...q, variantCount: counts.get(q.id) ?? 0 })),
     })
   }
+  if (state === 'bank') {
+    // Admin-facing view of what is actually public. This intentionally includes
+    // both canonical and ranked questions: ranking a question should not make it
+    // disappear from the operator's view of the live bank.
+    const questions = await listPublicQuestions(500)
+    const counts = await getVariantCounts(questions.map((q) => q.id))
+    return NextResponse.json({
+      questions: questions.map((q) => ({ ...q, variantCount: counts.get(q.id) ?? 0 })),
+    })
+  }
   return NextResponse.json(
-    { error: 'Only state=submitted, clustered, or canonical is supported' },
+    { error: 'Only state=submitted, clustered, canonical, or bank is supported' },
     { status: 400 },
   )
 }
